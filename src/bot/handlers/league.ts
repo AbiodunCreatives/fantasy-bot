@@ -134,6 +134,24 @@ function buildHowItWorksKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text("Got it - let me in", START_LOBBY);
 }
 
+function buildStartOnboardingText(input: {
+  firstName: string;
+  balance: number;
+}): string {
+  return [
+    `Welcome, ${input.firstName}.`,
+    "",
+    "Bayse Arena is 24h BTC fantasy trading where the best bankroll wins the pot.",
+    `Current balance: ${formatMoney(input.balance)}`,
+  ].join("\n");
+}
+
+function buildStartOnboardingKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("🏟 Browse Arenas", START_LOBBY)
+    .text("+ Create Arena", ARENA_CREATE);
+}
+
 function buildCreateArenaPickerText(balance: number): string {
   return [
     "New Arena",
@@ -984,9 +1002,17 @@ export async function handleStart(ctx: Context): Promise<void> {
     return;
   }
 
-  await ctx.reply(buildStartWelcomeText(), {
-    reply_markup: buildStartWelcomeKeyboard(),
-  });
+  const balance = await getBalance(ctx.from.id);
+
+  await ctx.reply(
+    buildStartOnboardingText({
+      firstName: ctx.from.first_name?.trim() || "there",
+      balance,
+    }),
+    {
+      reply_markup: buildStartOnboardingKeyboard(),
+    }
+  );
 }
 
 export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
