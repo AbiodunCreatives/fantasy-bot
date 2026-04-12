@@ -540,7 +540,7 @@ function buildLeagueHelpText(): string {
     "- Top finishers split the prize pool",
     "- Joining is final",
     "",
-    `New users start with ${formatMoney(FANTASY_MIN_ENTRY_FEE * 100)} in virtual play balance.`,
+    "All balances in this bot are virtual and live in this project's Supabase.",
   ].join("\n");
 }
 
@@ -758,7 +758,7 @@ async function renderArenaStatusList(ctx: Context, telegramId: number): Promise<
   const snapshots = await listFantasyLeagueSnapshots(telegramId);
 
   if (snapshots.length === 0) {
-    await renderArenaLobby(ctx);
+    await openLobbyOrFundingPrompt(ctx, telegramId);
     return;
   }
 

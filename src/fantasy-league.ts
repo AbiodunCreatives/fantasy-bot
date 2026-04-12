@@ -69,6 +69,7 @@ import { recordRevenueOnce } from "./db/revenue.js";
 import { redis } from "./utils/rateLimit.js";
 
 const tgApi = new Api(config.BOT_TOKEN);
+let cachedBotUsername: string | null = null;
 
 export const FANTASY_ASSET = "BTC" as const;
 export const FANTASY_DURATION_MS = 24 * 60 * 60 * 1000;
@@ -182,6 +183,16 @@ const activePromptTimers = new Map<string, NodeJS.Timeout>();
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+async function getBotUsername(): Promise<string> {
+  if (cachedBotUsername) {
+    return cachedBotUsername;
+  }
+
+  const me = await tgApi.getMe();
+  cachedBotUsername = me.username;
+  return cachedBotUsername;
 }
 
 function shortCode(): string {
@@ -914,6 +925,43 @@ function renderLeaderboardText(input: {
         input.viewerTelegramId
       )
     )}`,
+  ].join("\n");
+}
+
+function buildFinalArenaMessage(input: {
+  game: FantasyGame;
+  leaderboard: FantasyLeaderboardEntry[];
+  viewerTelegramId: number;
+  roundsPlayed: number;
+}): string {
+  const standings = input.leaderboard.map((entry) => {
+    const medal =
+      entry.place === 1 ? "🥇" : entry.place === 2 ? "🥈" : entry.place === 3 ? "🥉" : "  ";
+    const name = anonymizePlayer(entry.telegram_id, input.viewerTelegramId);
+    const payoutText =
+      entry.prize_awarded > 0 ? formatMoney(entry.prize_awarded) : "—";
+
+    return (
+      `${medal}  ${name.padEnd(8)} ${formatWholeMoney(entry.virtual_balance)}   ` +
+      `${formatSignedPercent(
+        getVirtualReturnPct(input.game, entry.virtual_balance)
+      )}   → ${payoutText}`
+    );
+  });
+  const me =
+    input.leaderboard.find((entry) => entry.telegram_id === input.viewerTelegramId) ??
+    null;
+  const payout = me?.prize_awarded ?? 0;
+
+  return [
+    `🏁 Arena ${input.game.code} — FINAL`,
+    "",
+    `Duration: 24h  •  ${input.roundsPlayed} rounds played`,
+    "",
+    ...standings,
+    "",
+    payout > 0 ? `Your payout: ${formatMoney(payout)} ✅` : "Your payout: —",
+    payout > 0 ? "Added to your balance." : "No payout this time.",
   ].join("\n");
 }
 
@@ -1890,16 +1938,8 @@ export async function finalizeFantasyGames(): Promise<void> {
     await syncFantasyPrizeAwards(game.id);
 
     const refreshedLeaderboard = await getFantasyLeaderboard(game.id);
-    const winnerLines = refreshedLeaderboard
-      .slice(0, splits.length)
-      .map((entry) => {
-        const share = splits[entry.place - 1] ?? 0;
-        const payout = roundMoney(settledGame.prize_pool * share);
-        const name = entry.username
-          ? `@${entry.username}`
-          : `User${entry.telegram_id}`;
-        return `#${entry.place} ${name} - ${formatMoney(payout)}`;
-      });
+    const roundsPlayed = countRoundsPlayed(await listFantasyTradesForGame(game.id));
+    const botUsername = await getBotUsername();
 
     await recordRevenueOnce({
       telegramId: game.creator_telegram_id,
@@ -1919,18 +1959,43 @@ export async function finalizeFantasyGames(): Promise<void> {
       completed_at: new Date().toISOString(),
     }) as FantasyGame;
 
-    const finalMessage = [
-      "🏆 ARENA COMPLETE",
-      "",
-      `League: ${game.code}`,
-      "Winners:",
-      ...(winnerLines.length > 0 ? winnerLines : ["No winners."]),
-      "",
-      buildLeaderboardText(completedGame, refreshedLeaderboard),
-    ].join("\n");
-
     await Promise.all(
-      members.map((member) => safeSendMessage(member.telegram_id, finalMessage))
+      members.map(async (member) => {
+        const me =
+          refreshedLeaderboard.find((entry) => entry.telegram_id === member.telegram_id) ??
+          null;
+        const leader = refreshedLeaderboard[0] ?? null;
+        const shareUrl =
+          me && leader
+            ? buildShareResultUrl({
+                botUsername,
+                entryFee: completedGame.entry_fee,
+                finishPlace: me.place,
+                fieldSize: refreshedLeaderboard.length,
+                returnPct: getVirtualReturnPct(completedGame, me.virtual_balance),
+                leaderReturnPct: getVirtualReturnPct(
+                  completedGame,
+                  leader.virtual_balance
+                ),
+              })
+            : null;
+        const keyboard = new InlineKeyboard().text("▶ Play again", "arena:create");
+
+        if (shareUrl) {
+          keyboard.url("📤 Share result", shareUrl);
+        }
+
+        await safeSendMessage(
+          member.telegram_id,
+          buildFinalArenaMessage({
+            game: completedGame,
+            leaderboard: refreshedLeaderboard,
+            viewerTelegramId: member.telegram_id,
+            roundsPlayed,
+          }),
+          keyboard
+        );
+      })
     );
   }
 }
