@@ -4,10 +4,12 @@ import express from "express";
 import { Bot, type Context } from "grammy";
 
 import {
+  handleFantasyLeagueUiAction,
   handleFantasyJoinConfirm,
   handleFantasyJoinDecline,
   handleFantasyLeagueTrade,
   handleLeague,
+  handleStart,
 } from "./bot/handlers/league.js";
 import { config } from "./config.js";
 import { supabase } from "./db/client.js";
@@ -34,8 +36,10 @@ bot.use(async (ctx, next) => {
   await next();
 });
 
+bot.command("start", wrap(handleStart));
 bot.command("league", wrap(handleLeague));
 bot.callbackQuery(/^flt:/, wrap(handleFantasyLeagueTrade));
+bot.callbackQuery(/^(start|lobby|arena):/, wrap(handleFantasyLeagueUiAction));
 bot.callbackQuery("fantasy:join:confirm", wrap(handleFantasyJoinConfirm));
 bot.callbackQuery("fantasy:join:decline", wrap(handleFantasyJoinDecline));
 
@@ -196,6 +200,10 @@ async function main(): Promise<void> {
   console.log(`[bot] Initialized as @${bot.botInfo.username}`);
 
   await bot.api.setMyCommands([
+    {
+      command: "start",
+      description: "Open Bayse Arena and browse arenas",
+    },
     {
       command: "league",
       description: "Create, join, and view fantasy arenas",
