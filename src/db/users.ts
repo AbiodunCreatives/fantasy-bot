@@ -1,5 +1,5 @@
-import { supabase } from "./client.js";
-import { config } from "../config.js";
+import { supabase } from "./client.ts";
+import { config } from "../config.ts";
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;

@@ -31,6 +31,15 @@ Supabase tables, so a brand-new Supabase project is enough.
 3. Install dependencies with `pnpm install`.
 4. Run `pnpm start`.
 
+## Render notes
+
+Use Node 22 and point the service at the source entry with a TypeScript-aware command.
+
+- Build command: `pnpm install --frozen-lockfile`
+- Start command: `pnpm start`
+
+If you prefer to run Node directly on Render, `node src/index.ts` also works with the current import setup.
+
 ## Database notes
 
 The full self-contained schema lives in [src/db/schema.sql](./src/db/schema.sql).

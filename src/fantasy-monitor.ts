@@ -1,6 +1,6 @@
-import { getCurrentRound, getRoundPricing } from "./bayse-market.js";
-import { config } from "./config.js";
-import { FANTASY_ASSET, processFantasyLeagueRound } from "./fantasy-league.js";
+import { getCurrentRound, getRoundPricing } from "./bayse-market.ts";
+import { config } from "./config.ts";
+import { FANTASY_ASSET, processFantasyLeagueRound } from "./fantasy-league.ts";
 
 let fantasyMonitorTimer: NodeJS.Timeout | null = null;
 let monitorInFlight = false;

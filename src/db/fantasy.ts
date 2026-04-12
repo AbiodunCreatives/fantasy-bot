@@ -1,4 +1,4 @@
-import { supabase } from "./client.js";
+import { supabase } from "./client.ts";
 
 export type FantasyGameStatus = "open" | "active" | "completed" | "cancelled";
 export type FantasyTradeDirection = "UP" | "DOWN";

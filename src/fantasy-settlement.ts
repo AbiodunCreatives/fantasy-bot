@@ -1,9 +1,9 @@
-import { config } from "./config.js";
+import { config } from "./config.ts";
 import {
   activateDueFantasyGames,
   finalizeFantasyGames,
   settleFantasyLeagueTrades,
-} from "./fantasy-league.js";
+} from "./fantasy-league.ts";
 
 let fantasySettlementTimer: NodeJS.Timeout | null = null;
 let settlementInFlight = false;

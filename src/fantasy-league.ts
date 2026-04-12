@@ -6,9 +6,9 @@ import {
   getEvent,
   type Round,
   type RoundPricing,
-} from "./bayse-market.js";
-import { config } from "./config.js";
-import { getBalance, creditBalance, debitBalance } from "./db/balances.js";
+} from "./bayse-market.ts";
+import { config } from "./config.ts";
+import { getBalance, creditBalance, debitBalance } from "./db/balances.ts";
 import {
   addFantasyGameMember,
   applyFantasyTradeSettlement,
@@ -45,7 +45,7 @@ import {
   type FantasyLeaderboardEntry,
   type FantasyTrade,
   type FantasyTradeDirection,
-} from "./db/fantasy.js";
+} from "./db/fantasy.ts";
 import {
   anonymizePlayer,
   buildShareResultUrl,
@@ -64,9 +64,9 @@ import {
   getPrizeAwardPreview,
   getProjectedPrizeForUser,
   getVirtualReturnPct,
-} from "./fantasy-ui.js";
-import { recordRevenueOnce } from "./db/revenue.js";
-import { redis } from "./utils/rateLimit.js";
+} from "./fantasy-ui.ts";
+import { recordRevenueOnce } from "./db/revenue.ts";
+import { redis } from "./utils/rateLimit.ts";
 
 const tgApi = new Api(config.BOT_TOKEN);
 let cachedBotUsername: string | null = null;

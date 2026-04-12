@@ -11,16 +11,16 @@ import {
   handleFantasyTextInput,
   handleLeague,
   handleStart,
-} from "./bot/handlers/league.js";
-import { config } from "./config.js";
-import { supabase } from "./db/client.js";
-import { upsertUserProfile } from "./db/users.js";
-import { startFantasyMonitor, stopFantasyMonitor } from "./fantasy-monitor.js";
+} from "./bot/handlers/league.ts";
+import { config } from "./config.ts";
+import { supabase } from "./db/client.ts";
+import { upsertUserProfile } from "./db/users.ts";
+import { startFantasyMonitor, stopFantasyMonitor } from "./fantasy-monitor.ts";
 import {
   startFantasySettlementMonitor,
   stopFantasySettlementMonitor,
-} from "./fantasy-settlement.js";
-import { redis } from "./utils/rateLimit.js";
+} from "./fantasy-settlement.ts";
+import { redis } from "./utils/rateLimit.ts";
 
 const bot = new Bot(config.BOT_TOKEN);
 const app = express();

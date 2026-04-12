@@ -1,7 +1,7 @@
 import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 
-import { getBalance } from "../../db/balances.js";
+import { getBalance } from "../../db/balances.ts";
 import {
   addFantasyPlayBalance,
   buildFantasyTradeDirectionSelection,
@@ -24,7 +24,7 @@ import {
   savePendingFantasyLeagueJoin,
   FANTASY_MIN_ENTRY_FEE,
   type FantasyTradePlacementResult,
-} from "../../fantasy-league.js";
+} from "../../fantasy-league.ts";
 import {
   ARENA_ENTRY_FEE_OPTIONS,
   anonymizePlayer,
@@ -33,7 +33,7 @@ import {
   formatSignedPercent,
   formatWholeMoney,
   getApproxRoundsUntil,
-} from "../../fantasy-ui.js";
+} from "../../fantasy-ui.ts";
 
 const START_HOW_IT_WORKS = "start:how";
 const START_LOBBY = "start:lobby";

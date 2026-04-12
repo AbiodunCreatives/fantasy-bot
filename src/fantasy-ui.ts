@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 
-import type { FantasyGame, FantasyLeaderboardEntry } from "./db/fantasy.js";
+import type { FantasyGame, FantasyLeaderboardEntry } from "./db/fantasy.ts";
 
 export const ARENA_ENTRY_FEE_OPTIONS = [1, 2, 5, 10] as const;
 

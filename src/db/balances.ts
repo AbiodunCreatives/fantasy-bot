@@ -1,5 +1,5 @@
-import { supabase } from "./client.js";
-import { upsertUserProfile } from "./users.js";
+import { supabase } from "./client.ts";
+import { upsertUserProfile } from "./users.ts";
 
 interface FantasyUserBalanceRow {
   telegram_id: number;
