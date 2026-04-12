@@ -8,7 +8,7 @@ import {
   type RoundPricing,
 } from "./bayse-market.js";
 import { config } from "./config.js";
-import { creditBalance, debitBalance } from "./db/balances.js";
+import { getBalance, creditBalance, debitBalance } from "./db/balances.js";
 import {
   addFantasyGameMember,
   applyFantasyTradeSettlement,
@@ -81,6 +81,8 @@ const FANTASY_ROUND_ALERT_MAX_PROGRESS = 0.2;
 const FANTASY_JOIN_PENDING_TTL_SECONDS = 5 * 60;
 const FANTASY_TRADE_REF_TTL_SECONDS = 15 * 60;
 const FANTASY_MISSED_STREAK_ALERT = 3;
+const FANTASY_CUSTOM_FUND_TTL_SECONDS = 10 * 60;
+const FANTASY_NEXT_ROUND_REMINDER_TTL_SECONDS = 2 * 60 * 60;
 
 interface FantasyTradeRefPayload {
   gameId: string;
@@ -213,6 +215,14 @@ function fantasyMissedStreakKey(gameId: string, telegramId: number): string {
   return `fantasy:missed:${gameId}:${telegramId}`;
 }
 
+function fantasyCustomFundKey(telegramId: number): string {
+  return `fantasy:fund:custom:${telegramId}`;
+}
+
+function fantasyRoundReminderKey(gameId: string, telegramId: number): string {
+  return `fantasy:remind:${gameId}:${telegramId}`;
+}
+
 function promptStateKey(chatId: number, messageId: number): string {
   return `${chatId}:${messageId}`;
 }
@@ -274,6 +284,84 @@ export async function clearPendingFantasyLeagueJoin(
   telegramId: number
 ): Promise<void> {
   await redis.del(fantasyJoinPendingKey(telegramId));
+}
+
+export async function savePendingFantasyCustomFundAmount(
+  telegramId: number
+): Promise<void> {
+  await redis.set(
+    fantasyCustomFundKey(telegramId),
+    "1",
+    "EX",
+    FANTASY_CUSTOM_FUND_TTL_SECONDS
+  );
+}
+
+export async function hasPendingFantasyCustomFundAmount(
+  telegramId: number
+): Promise<boolean> {
+  return Boolean(await redis.get(fantasyCustomFundKey(telegramId)));
+}
+
+export async function clearPendingFantasyCustomFundAmount(
+  telegramId: number
+): Promise<void> {
+  await redis.del(fantasyCustomFundKey(telegramId));
+}
+
+export async function addFantasyPlayBalance(
+  telegramId: number,
+  amount: number
+): Promise<number> {
+  const normalizedAmount = roundMoney(amount);
+
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    throw new Error("Top-up amount must be greater than zero.");
+  }
+
+  await creditBalance(telegramId, normalizedAmount, {
+    reason: "fantasy_top_up",
+    referenceType: "fantasy_balance",
+    metadata: {
+      amount: normalizedAmount,
+    },
+  });
+
+  return getBalance(telegramId);
+}
+
+export async function saveFantasyNextRoundReminder(
+  telegramId: number,
+  code: string
+): Promise<boolean> {
+  const game = await getFantasyGameByCode(code.trim().toUpperCase());
+
+  if (!game) {
+    return false;
+  }
+
+  const member = await getFantasyGameMember(game.id, telegramId);
+
+  if (!member) {
+    return false;
+  }
+
+  await redis.set(
+    fantasyRoundReminderKey(game.id, telegramId),
+    "1",
+    "EX",
+    FANTASY_NEXT_ROUND_REMINDER_TTL_SECONDS
+  );
+
+  return true;
+}
+
+async function consumeFantasyNextRoundReminder(
+  gameId: string,
+  telegramId: number
+): Promise<boolean> {
+  const deleted = await redis.del(fantasyRoundReminderKey(gameId, telegramId));
+  return deleted > 0;
 }
 
 async function loadFantasyTradeReference(
@@ -1351,9 +1439,15 @@ export async function processFantasyLeagueRound(
           virtualBalance: member.virtual_balance,
           ref: roundRef,
         });
+        const reminderActive = await consumeFantasyNextRoundReminder(
+          game.id,
+          member.telegram_id
+        );
         const sent = await safeSendMessageAndReturn(
           member.telegram_id,
-          prompt.text,
+          reminderActive
+            ? ["🔔 Don't miss this round.", "", prompt.text].join("\n")
+            : prompt.text,
           prompt.keyboard
         );
 

@@ -3,26 +3,31 @@ import type { Context } from "grammy";
 
 import { getBalance } from "../../db/balances.js";
 import {
+  addFantasyPlayBalance,
   buildFantasyTradeDirectionSelection,
   clearFantasyTradePromptState,
   clearPendingFantasyLeagueJoin,
+  clearPendingFantasyCustomFundAmount,
   createFantasyLeagueGame,
   getFantasyLeagueStatusView,
   getFantasyLeagueBoardText,
   getFantasyLeagueDetailsByCode,
   getFantasyLeagueJoinPreview,
-  getFantasyLeagueJoinSummary,
+  hasPendingFantasyCustomFundAmount,
   joinFantasyLeagueGame,
   listFantasyArenaLobby,
   listFantasyLeagueSnapshots,
   loadPendingFantasyLeagueJoin,
   placeFantasyTradeFromCallbackData,
+  saveFantasyNextRoundReminder,
+  savePendingFantasyCustomFundAmount,
   savePendingFantasyLeagueJoin,
   FANTASY_MIN_ENTRY_FEE,
   type FantasyTradePlacementResult,
 } from "../../fantasy-league.js";
 import {
   ARENA_ENTRY_FEE_OPTIONS,
+  anonymizePlayer,
   buildShareInviteUrl,
   formatCompactDuration,
   formatSignedPercent,
@@ -36,8 +41,14 @@ const LOBBY_REFRESH = "lobby:refresh";
 const LOBBY_LIVE = "lobby:live";
 const ARENA_CREATE = "arena:create";
 const ARENA_BACK_TO_LOBBY = "arena:lobby";
+const ARENA_REFRESH_PREFIX = "arena:refresh:";
+const ARENA_CATCH_UP_PREFIX = "arena:catch:";
+const ARENA_REMIND_PREFIX = "arena:remind:";
 const ARENA_JOIN_CONFIRM = "fantasy:join:confirm";
 const ARENA_JOIN_DECLINE = "fantasy:join:decline";
+const FUNDS_ADD = "funds:add";
+const FUNDS_CUSTOM = "funds:custom";
+const FUNDS_BACK_TO_LOBBY = "funds:lobby";
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -406,8 +417,84 @@ function buildInsufficientBalanceWithOptionsText(balance: number): string {
 
 function buildInsufficientBalanceKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("💳 Add Funds", "funds:add")
+    .text("💳 Add Funds", FUNDS_ADD)
     .text("👀 Watch live arena", LOBBY_LIVE);
+}
+
+function buildCreateInsufficientKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("💳 Add Funds", FUNDS_ADD)
+    .text("Pick a lower fee", ARENA_CREATE);
+}
+
+function buildAddFundsText(): string {
+  return [
+    "How much do you want to deposit?",
+  ].join("\n");
+}
+
+function buildAddFundsKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("$5", "funds:amount:5")
+    .text("$10", "funds:amount:10")
+    .text("$20", "funds:amount:20")
+    .text("$50", "funds:amount:50")
+    .row()
+    .text("Custom amount", FUNDS_CUSTOM)
+    .row()
+    .text("🏟 Browse Arenas", FUNDS_BACK_TO_LOBBY);
+}
+
+function buildCustomFundsPromptText(): string {
+  return "Enter an amount in USD (e.g. 15):";
+}
+
+function buildFundsAddedText(amount: number, balance: number): string {
+  return [
+    `✅ ${formatMoney(amount)} added to your balance.`,
+    "",
+    `Balance: ${formatMoney(balance)}`,
+  ].join("\n");
+}
+
+function buildFundsAddedKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text("🏟 Browse Arenas", START_LOBBY);
+}
+
+function buildCatchUpText(input: {
+  code: string;
+  leaderName: string;
+  gap: number;
+  suggestedStake: number;
+  requiredReturnMultiple: number;
+}): string {
+  return [
+    `${input.leaderName} is ${formatWholeMoney(input.gap)} ahead.`,
+    "",
+    "To close the gap in one trade:",
+    `- Stake ${formatWholeMoney(input.suggestedStake)} on the next round`,
+    `- You'd need roughly a ${input.requiredReturnMultiple.toFixed(2)}x return`,
+    "",
+    "Risky, but doable across 2-3 good rounds.",
+  ].join("\n");
+}
+
+function buildArenaBoardKeyboard(input: {
+  code: string;
+  canCatchUp: boolean;
+}): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  if (input.canCatchUp) {
+    keyboard.text("⬆ How to catch #1", `${ARENA_CATCH_UP_PREFIX}${input.code}`);
+  }
+
+  keyboard
+    .text("🔄 Refresh", `${ARENA_REFRESH_PREFIX}${input.code}`)
+    .row()
+    .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
+
+  return keyboard;
 }
 
 function buildFantasyJoinSuccessKeyboard(shareUrl?: string): InlineKeyboard {
@@ -648,6 +735,25 @@ async function renderArenaLobby(
   );
 }
 
+async function openLobbyOrFundingPrompt(
+  ctx: Context,
+  telegramId: number,
+  options?: { liveOnly?: boolean }
+): Promise<void> {
+  const balance = await getBalance(telegramId);
+
+  if (!options?.liveOnly && balance < FANTASY_MIN_ENTRY_FEE) {
+    await editTradePromptMessage(
+      ctx,
+      buildInsufficientBalanceWithOptionsText(balance),
+      buildInsufficientBalanceKeyboard()
+    );
+    return;
+  }
+
+  await renderArenaLobby(ctx, options);
+}
+
 async function renderArenaStatusList(ctx: Context, telegramId: number): Promise<void> {
   const snapshots = await listFantasyLeagueSnapshots(telegramId);
 
@@ -776,18 +882,63 @@ async function renderArenaStatusView(
   );
 }
 
+async function renderArenaBoardView(
+  ctx: Context,
+  telegramId: number,
+  code: string,
+  options?: { spectating?: boolean }
+): Promise<void> {
+  const view = await getFantasyLeagueStatusView(telegramId, code);
+  const text = await getFantasyLeagueBoardText(code, telegramId);
+
+  await editTradePromptMessage(
+    ctx,
+    options?.spectating ? ["👀 Spectating", "", text].join("\n") : text,
+    buildArenaBoardKeyboard({
+      code: view.game.code,
+      canCatchUp: Boolean(view.me && view.me.place > 1),
+    })
+  );
+}
+
+async function renderCatchUpView(
+  ctx: Context,
+  telegramId: number,
+  code: string
+): Promise<void> {
+  const view = await getFantasyLeagueStatusView(telegramId, code);
+  const leader = view.leaderboard[0] ?? null;
+
+  if (!view.me || !leader || leader.telegram_id === telegramId) {
+    await renderArenaBoardView(ctx, telegramId, code);
+    return;
+  }
+
+  const gap = Math.max(0, leader.virtual_balance - view.me.virtual_balance);
+  const suggestedStake = 100;
+  const requiredReturnMultiple = gap / suggestedStake + 1;
+
+  await editTradePromptMessage(
+    ctx,
+    buildCatchUpText({
+      code,
+      leaderName: anonymizePlayer(leader.telegram_id, telegramId),
+      gap,
+      suggestedStake,
+      requiredReturnMultiple,
+    }),
+    new InlineKeyboard()
+      .text("Back to leaderboard", `arena:board:${code}`)
+      .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY)
+  );
+}
+
 async function renderArenaWatchView(
   ctx: Context,
   telegramId: number,
   code: string
 ): Promise<void> {
-  const text = await getFantasyLeagueBoardText(code, telegramId);
-
-  await editTradePromptMessage(
-    ctx,
-    ["👀 Spectating", "", text].join("\n"),
-    new InlineKeyboard().text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY)
-  );
+  await renderArenaBoardView(ctx, telegramId, code, { spectating: true });
 }
 
 async function createArenaFromSelection(
@@ -851,12 +1002,51 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
   }
 
   if (data === START_LOBBY || data === LOBBY_REFRESH || data === ARENA_BACK_TO_LOBBY) {
-    await renderArenaLobby(ctx);
+    await openLobbyOrFundingPrompt(ctx, ctx.from.id);
     return;
   }
 
   if (data === LOBBY_LIVE) {
-    await renderArenaLobby(ctx, { liveOnly: true });
+    await openLobbyOrFundingPrompt(ctx, ctx.from.id, { liveOnly: true });
+    return;
+  }
+
+  if (data === FUNDS_ADD) {
+    await editTradePromptMessage(ctx, buildAddFundsText(), buildAddFundsKeyboard());
+    return;
+  }
+
+  if (data === FUNDS_CUSTOM) {
+    await savePendingFantasyCustomFundAmount(ctx.from.id);
+    await editTradePromptMessage(
+      ctx,
+      buildCustomFundsPromptText(),
+      new InlineKeyboard().text("🏟 Back to lobby", FUNDS_BACK_TO_LOBBY)
+    );
+    return;
+  }
+
+  if (data === FUNDS_BACK_TO_LOBBY) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+    await openLobbyOrFundingPrompt(ctx, ctx.from.id);
+    return;
+  }
+
+  if (data.startsWith("funds:amount:")) {
+    const amount = Number.parseFloat(data.slice("funds:amount:".length));
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      await ctx.reply("Something went wrong. Please try again.");
+      return;
+    }
+
+    const balance = await addFantasyPlayBalance(ctx.from.id, amount);
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+    await editTradePromptMessage(
+      ctx,
+      buildFundsAddedText(amount, balance),
+      buildFundsAddedKeyboard()
+    );
     return;
   }
 
@@ -888,7 +1078,7 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
         await editTradePromptMessage(
           ctx,
           buildArenaInsufficientBalanceText(entryFee, balance),
-          buildInsufficientBalanceKeyboard()
+          buildCreateInsufficientKeyboard()
         );
         return;
       }
@@ -919,13 +1109,25 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
 
   if (data.startsWith("arena:board:")) {
     try {
-      await editTradePromptMessage(
-        ctx,
-        await getFantasyLeagueBoardText(data.slice("arena:board:".length), ctx.from.id),
-        new InlineKeyboard()
-          .text("Status", `arena:status:${data.slice("arena:board:".length)}`)
-          .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY)
-      );
+      await renderArenaBoardView(ctx, ctx.from.id, data.slice("arena:board:".length));
+    } catch (error) {
+      await replyArenaLookupError(ctx, error);
+    }
+    return;
+  }
+
+  if (data.startsWith(ARENA_REFRESH_PREFIX)) {
+    try {
+      await renderArenaBoardView(ctx, ctx.from.id, data.slice(ARENA_REFRESH_PREFIX.length));
+    } catch (error) {
+      await replyArenaLookupError(ctx, error);
+    }
+    return;
+  }
+
+  if (data.startsWith(ARENA_CATCH_UP_PREFIX)) {
+    try {
+      await renderCatchUpView(ctx, ctx.from.id, data.slice(ARENA_CATCH_UP_PREFIX.length));
     } catch (error) {
       await replyArenaLookupError(ctx, error);
     }
@@ -940,6 +1142,52 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
     }
     return;
   }
+
+  if (data.startsWith(ARENA_REMIND_PREFIX)) {
+    const saved = await saveFantasyNextRoundReminder(
+      ctx.from.id,
+      data.slice(ARENA_REMIND_PREFIX.length)
+    );
+
+    await ctx.reply(
+      saved
+        ? "Locked in. I'll nudge you when the next round opens."
+        : "I couldn't set a reminder for that arena."
+    );
+    return;
+  }
+}
+
+export async function handleFantasyTextInput(ctx: Context): Promise<boolean> {
+  if (!ctx.from) {
+    return false;
+  }
+
+  const text = ctx.message?.text?.trim();
+
+  if (!text || text.startsWith("/")) {
+    return false;
+  }
+
+  const waitingForAmount = await hasPendingFantasyCustomFundAmount(ctx.from.id);
+
+  if (!waitingForAmount) {
+    return false;
+  }
+
+  const amount = Number.parseFloat(text);
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await ctx.reply("Enter an amount in USD (e.g. 15):");
+    return true;
+  }
+
+  const balance = await addFantasyPlayBalance(ctx.from.id, amount);
+  await clearPendingFantasyCustomFundAmount(ctx.from.id);
+  await ctx.reply(buildFundsAddedText(amount, balance), {
+    reply_markup: buildFundsAddedKeyboard(),
+  });
+  return true;
 }
 
 export async function handleLeague(ctx: Context): Promise<void> {
@@ -1033,7 +1281,13 @@ export async function handleLeague(ctx: Context): Promise<void> {
     }
 
     try {
-      await ctx.reply(await getFantasyLeagueBoardText(code, ctx.from.id));
+      const view = await getFantasyLeagueStatusView(ctx.from.id, code);
+      await ctx.reply(await getFantasyLeagueBoardText(code, ctx.from.id), {
+        reply_markup: buildArenaBoardKeyboard({
+          code,
+          canCatchUp: Boolean(view.me && view.me.place > 1),
+        }),
+      });
     } catch (error) {
       await replyArenaLookupError(ctx, error);
     }
@@ -1050,7 +1304,51 @@ export async function handleLeague(ctx: Context): Promise<void> {
     }
 
     try {
-      await ctx.reply(await getFantasyLeagueJoinSummary(code));
+      const view = await getFantasyLeagueStatusView(ctx.from.id, code);
+      const settledTrades =
+        (view.me?.wins ?? 0) + (view.me?.losses ?? 0);
+      const accuracyText =
+        settledTrades > 0
+          ? `${view.me?.wins ?? 0}/${settledTrades} (${roundMoney(
+              ((view.me?.wins ?? 0) / settledTrades) * 100
+            )}%)`
+          : "0/0 (0%)";
+      const lastRoundText = view.lastTrade
+        ? `${view.lastTrade.direction} ${
+            view.lastTrade.outcome === "WIN"
+              ? "✅"
+              : view.lastTrade.outcome === "LOSS"
+                ? "❌"
+                : "•"
+          }  ${view.lastTrade.outcome === "WIN" ? `+${formatMoney(view.lastTrade.payout)}` : ""}`.trim()
+        : "No trades yet";
+
+      await ctx.reply(
+        [
+          `Arena ${view.game.code}  •  ${view.game.status.toUpperCase()}`,
+          "",
+          `Your position: ${
+            view.me ? `#${view.me.place} of ${view.memberCount}` : "Not joined"
+          }`,
+          `Stack: ${formatWholeMoney(view.me?.virtual_balance ?? view.game.virtual_start_balance)}  (${formatSignedPercent(
+            view.me
+              ? ((view.me.virtual_balance - view.game.virtual_start_balance) /
+                  view.game.virtual_start_balance) *
+                  100
+              : 0
+          )})`,
+          `Rounds left: ~${view.roundsLeft}  (~${view.roundsLeft * 15} min)`,
+          `Prize if game ends now: ${formatMoney(view.prizeIfEndedNow)}`,
+          "",
+          `Last round: ${lastRoundText}`,
+          `Accuracy: ${accuracyText}`,
+        ].join("\n"),
+        {
+          reply_markup: new InlineKeyboard()
+            .text("Full leaderboard", `arena:board:${view.game.code}`)
+            .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY),
+        }
+      );
     } catch (error) {
       await replyArenaLookupError(ctx, error);
     }

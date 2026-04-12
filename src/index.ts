@@ -8,6 +8,7 @@ import {
   handleFantasyJoinConfirm,
   handleFantasyJoinDecline,
   handleFantasyLeagueTrade,
+  handleFantasyTextInput,
   handleLeague,
   handleStart,
 } from "./bot/handlers/league.js";
@@ -39,9 +40,18 @@ bot.use(async (ctx, next) => {
 bot.command("start", wrap(handleStart));
 bot.command("league", wrap(handleLeague));
 bot.callbackQuery(/^flt:/, wrap(handleFantasyLeagueTrade));
-bot.callbackQuery(/^(start|lobby|arena):/, wrap(handleFantasyLeagueUiAction));
+bot.callbackQuery(/^(start|lobby|arena|funds):/, wrap(handleFantasyLeagueUiAction));
 bot.callbackQuery("fantasy:join:confirm", wrap(handleFantasyJoinConfirm));
 bot.callbackQuery("fantasy:join:decline", wrap(handleFantasyJoinDecline));
+bot.on("message:text", async (ctx, next) => {
+  const handled = await handleFantasyTextInput(ctx);
+
+  if (handled) {
+    return;
+  }
+
+  await next();
+});
 
 bot.catch((error) => {
   console.error(
