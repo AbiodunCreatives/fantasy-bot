@@ -19,7 +19,7 @@ export async function recordRevenueOnce(input: {
     return false;
   }
 
-  const { error } = await supabase.from("revenue").insert({
+  const { error } = await supabase.from("fantasy_revenue").insert({
     telegram_id: input.telegramId ?? null,
     type: input.type,
     amount,

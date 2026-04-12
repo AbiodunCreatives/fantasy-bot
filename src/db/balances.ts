@@ -1,14 +1,9 @@
 import { supabase } from "./client.js";
+import { upsertUserProfile } from "./users.js";
 
-interface UserAccessBalanceRow {
-  telegram_id: string;
-  balance: number | string | null;
-}
-
-interface ApplyBalanceDeltaRow {
-  success?: boolean | null;
-  balance_before?: number | string | null;
-  balance_after?: number | string | null;
+interface FantasyUserBalanceRow {
+  telegram_id: number;
+  wallet_balance: number | string | null;
 }
 
 export interface BalanceChangeOptions {
@@ -35,20 +30,20 @@ function parseBalance(value: number | string | null | undefined): number {
   return 0;
 }
 
-async function getUserAccessRow(
+async function getFantasyUserRow(
   telegramId: string
-): Promise<UserAccessBalanceRow | null> {
+): Promise<FantasyUserBalanceRow | null> {
   const { data, error } = await supabase
-    .from("user_access")
-    .select("telegram_id, balance")
-    .eq("telegram_id", telegramId)
+    .from("fantasy_users")
+    .select("telegram_id, wallet_balance")
+    .eq("telegram_id", Number.parseInt(telegramId, 10))
     .maybeSingle();
 
   if (error) {
     throw error;
   }
 
-  return (data as UserAccessBalanceRow | null) ?? null;
+  return (data as FantasyUserBalanceRow | null) ?? null;
 }
 
 async function applyBalanceDelta(input: {
@@ -67,34 +62,51 @@ async function applyBalanceDelta(input: {
     throw new Error("Balance delta must be a finite number.");
   }
 
-  const { data, error } = await supabase.rpc("apply_balance_delta", {
-    p_telegram_id: input.telegramId,
-    p_delta: normalizedDelta,
-    p_allow_negative: input.allowNegative,
-    p_reason: input.options?.reason ?? "adjustment",
-    p_reference_type: input.options?.referenceType ?? null,
-    p_reference_id: input.options?.referenceId ?? null,
-    p_metadata: input.options?.metadata ?? {},
-  });
+  await upsertUserProfile(input.telegramId);
 
-  if (error) {
-    throw error;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const row = await getFantasyUserRow(String(input.telegramId));
+    const balanceBefore = parseBalance(row?.wallet_balance);
+    const balanceAfter = roundMoney(balanceBefore + normalizedDelta);
+
+    if (!input.allowNegative && balanceAfter < 0) {
+      return {
+        success: false,
+        balanceBefore,
+        balanceAfter: balanceBefore,
+      };
+    }
+
+    const { data, error } = await supabase
+      .from("fantasy_users")
+      .update({
+        wallet_balance: balanceAfter,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("telegram_id", input.telegramId)
+      .eq("wallet_balance", balanceBefore)
+      .select("telegram_id");
+
+    if (error) {
+      throw error;
+    }
+
+    if ((data?.length ?? 0) > 0) {
+      return {
+        success: true,
+        balanceBefore,
+        balanceAfter,
+      };
+    }
   }
 
-  const row = (
-    Array.isArray(data) ? data[0] : data
-  ) as ApplyBalanceDeltaRow | null;
-
-  return {
-    success: row?.success === true,
-    balanceBefore: parseBalance(row?.balance_before),
-    balanceAfter: parseBalance(row?.balance_after),
-  };
+  throw new Error("Wallet balance update failed after multiple retries.");
 }
 
 export async function getBalance(telegramId: number): Promise<number> {
-  const row = await getUserAccessRow(String(telegramId));
-  return parseBalance(row?.balance);
+  await upsertUserProfile(telegramId);
+  const row = await getFantasyUserRow(String(telegramId));
+  return parseBalance(row?.wallet_balance);
 }
 
 export async function creditBalance(

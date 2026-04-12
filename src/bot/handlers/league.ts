@@ -3,6 +3,8 @@ import type { Context } from "grammy";
 
 import { getBalance } from "../../db/balances.js";
 import {
+  buildFantasyTradeDirectionSelection,
+  clearFantasyTradePromptState,
   clearPendingFantasyLeagueJoin,
   createFantasyLeagueGame,
   getFantasyLeagueBoardText,
@@ -14,6 +16,7 @@ import {
   loadPendingFantasyLeagueJoin,
   placeFantasyTradeFromCallbackData,
   savePendingFantasyLeagueJoin,
+  type FantasyTradePlacementResult,
 } from "../../fantasy-league.js";
 
 function roundMoney(value: number): number {
@@ -60,13 +63,12 @@ function buildArenaInsufficientBalanceText(
   balance: number
 ): string {
   return [
-    "Insufficient balance.",
+    "Insufficient play balance.",
     "",
-    `You need ${formatMoney(entryFee)} to join this arena.`,
-    `Your balance: ${formatMoney(balance)}`,
+    `You need ${formatMoney(entryFee)} available for this arena entry.`,
+    `Your play balance: ${formatMoney(balance)}`,
     "",
-    "This extracted app still uses the internal balance ledger.",
-    "Wire a funding flow next, or credit the balance manually.",
+    "Arena entries and prizes use your virtual play balance.",
   ].join("\n");
 }
 
@@ -95,7 +97,7 @@ function buildFantasyJoinPreviewText(input: {
     "",
     "Joining is final. No refunds after you join.",
     "",
-    `Your balance: ${formatMoney(input.balance)}`,
+    `Your play balance: ${formatMoney(input.balance)}`,
     `After joining: ${formatMoney(input.afterJoiningBalance)}`,
   ].join("\n");
 }
@@ -111,8 +113,8 @@ function buildFantasyJoinSuccessText(input: {
     "You're in. Welcome to the arena.",
     "",
     `League: ${input.code}`,
-    `Virtual balance: ${formatMoney(input.virtualBalance)}`,
-    `Cash balance: ${formatMoney(input.cashBalance)}`,
+    `Arena bankroll: ${formatMoney(input.virtualBalance)}`,
+    `Play balance: ${formatMoney(input.cashBalance)}`,
     "",
     "You'll receive BTC 15-minute trading prompts from the next round onward.",
   ].join("\n");
@@ -137,7 +139,7 @@ function buildLeagueHelpText(): string {
     "- Top finishers split the prize pool",
     "- Joining is final",
     "",
-    "This scaffold still assumes balances already exist in the shared ledger.",
+    "All balances in this bot are virtual and live in this project's Supabase.",
   ].join("\n");
 }
 
@@ -179,7 +181,10 @@ async function replyFantasyJoinError(
     return;
   }
 
-  if (normalized.includes("insufficient balance")) {
+  if (
+    normalized.includes("insufficient play balance") ||
+    normalized.includes("insufficient balance")
+  ) {
     if (!ctx.from) {
       await ctx.reply("Something went wrong. Please try again.");
       return;
@@ -201,6 +206,91 @@ async function replyFantasyJoinError(
   }
 
   await ctx.reply("Something went wrong. Please try again.");
+}
+
+function getPromptMessageRef(ctx: Context): {
+  chatId: number | undefined;
+  messageId: number | undefined;
+} {
+  const message = ctx.callbackQuery?.message;
+
+  return {
+    chatId: ctx.chat?.id,
+    messageId:
+      message && "message_id" in message ? message.message_id : undefined,
+  };
+}
+
+function isWarmRoundCloseError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+
+  return (
+    message.includes("round has ended") ||
+    message.includes("round is no longer available") ||
+    message.includes("league is not active right now") ||
+    message.includes("league has already ended")
+  );
+}
+
+function buildRoundClosedText(): string {
+  return [
+    "That round just closed before your trade locked in.",
+    "",
+    "No trade was placed.",
+    "You're still in it. I will send the next BTC prompt shortly.",
+  ].join("\n");
+}
+
+function buildTradeAlreadyLockedText(): string {
+  return [
+    "That round is already locked in.",
+    "",
+    "Watch for the result after the close.",
+  ].join("\n");
+}
+
+function buildTradeLockedText(result: FantasyTradePlacementResult): string {
+  return [
+    `Round ${result.roundNumber} locked in - ${result.game.code}`,
+    "",
+    `Direction: ${result.direction}`,
+    `Stake: ${formatMoney(result.stake)}`,
+    `Entry price: ${Math.round(result.entryPrice * 100)}c`,
+    `Shares: ${result.shares.toFixed(2)}`,
+    `Virtual balance: ${formatMoney(result.remainingBalance)}`,
+    "",
+    "Nice. I'll send the result after the round closes.",
+  ].join("\n");
+}
+
+async function editTradePromptMessage(
+  ctx: Context,
+  text: string,
+  keyboard?: InlineKeyboard
+): Promise<void> {
+  const { chatId, messageId } = getPromptMessageRef(ctx);
+
+  if (chatId !== undefined && messageId !== undefined) {
+    try {
+      await ctx.editMessageText(text, {
+        reply_markup: keyboard ?? new InlineKeyboard(),
+      });
+      return;
+    } catch (error) {
+      const normalized = error instanceof Error ? error.message.toLowerCase() : "";
+
+      if (normalized.includes("message is not modified")) {
+        return;
+      }
+    }
+  }
+
+  if (keyboard) {
+    await ctx.reply(text, { reply_markup: keyboard });
+    return;
+  }
+
+  await ctx.reply(text);
 }
 
 export async function handleLeague(ctx: Context): Promise<void> {
@@ -276,7 +366,10 @@ export async function handleLeague(ctx: Context): Promise<void> {
     } catch (error) {
       const message = error instanceof Error ? error.message.toLowerCase() : "";
 
-      if (message.includes("insufficient balance")) {
+      if (
+        message.includes("insufficient play balance") ||
+        message.includes("insufficient balance")
+      ) {
         const balance = await getBalance(ctx.from.id);
         await ctx.reply(buildArenaInsufficientBalanceText(entryFee, balance));
         return;
@@ -345,7 +438,7 @@ export async function handleLeague(ctx: Context): Promise<void> {
     }
 
     try {
-      await ctx.reply(await getFantasyLeagueBoardText(code));
+      await ctx.reply(await getFantasyLeagueBoardText(code, ctx.from.id));
     } catch (error) {
       await replyArenaLookupError(ctx, error);
     }
@@ -378,22 +471,73 @@ export async function handleFantasyLeagueTrade(ctx: Context): Promise<void> {
     return;
   }
 
-  const result = await placeFantasyTradeFromCallbackData({
-    telegramId: ctx.from.id,
-    callbackData: ctx.callbackQuery.data,
-  });
+  const callbackData = ctx.callbackQuery.data;
+  const { chatId, messageId } = getPromptMessageRef(ctx);
 
-  await ctx.reply(
-    [
-      `BAYSE FANTASY ARENA TRADE LOCKED - ${result.game.code}`,
-      "",
-      `Direction: ${result.direction}`,
-      `Stake: ${formatMoney(result.stake)}`,
-      `Entry price: ${Math.round(result.entryPrice * 100)}c`,
-      `Shares: ${result.shares.toFixed(2)}`,
-      `Virtual balance: ${formatMoney(result.remainingBalance)}`,
-    ].join("\n")
-  );
+  if (callbackData.startsWith("flt:s:")) {
+    try {
+      const directionSelection = await buildFantasyTradeDirectionSelection({
+        telegramId: ctx.from.id,
+        callbackData,
+        chatId,
+        messageId,
+      });
+
+      await editTradePromptMessage(
+        ctx,
+        directionSelection.text,
+        directionSelection.keyboard
+      );
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+
+      if (isWarmRoundCloseError(error)) {
+        clearFantasyTradePromptState(chatId, messageId);
+        await editTradePromptMessage(ctx, buildRoundClosedText());
+        return;
+      }
+
+      if (message) {
+        await ctx.reply(message);
+        return;
+      }
+
+      throw error;
+    }
+  }
+
+  try {
+    const result = await placeFantasyTradeFromCallbackData({
+      telegramId: ctx.from.id,
+      callbackData,
+    });
+
+    clearFantasyTradePromptState(chatId, messageId);
+    await editTradePromptMessage(ctx, buildTradeLockedText(result));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    const normalized = message.toLowerCase();
+
+    if (isWarmRoundCloseError(error)) {
+      clearFantasyTradePromptState(chatId, messageId);
+      await editTradePromptMessage(ctx, buildRoundClosedText());
+      return;
+    }
+
+    if (normalized.includes("already placed a fantasy trade")) {
+      clearFantasyTradePromptState(chatId, messageId);
+      await editTradePromptMessage(ctx, buildTradeAlreadyLockedText());
+      return;
+    }
+
+    if (message) {
+      await ctx.reply(message);
+      return;
+    }
+
+    throw error;
+  }
 }
 
 export async function handleFantasyJoinConfirm(ctx: Context): Promise<void> {

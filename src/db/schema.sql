@@ -1,15 +1,25 @@
--- Fantasy bot schema excerpt.
--- This app still assumes the shared real-money balance model exists in the target database:
---   - users
---   - user_access
---   - balance_ledger
---   - revenue
---   - upsert_user(...)
---   - apply_balance_delta(...)
+-- Fantasy bot schema.
+-- Apply this whole file to a fresh Supabase project before starting the bot.
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_revenue_fantasy_commission_type
-  ON revenue (type)
-  WHERE type LIKE 'fantasy_commission:%';
+CREATE TABLE IF NOT EXISTS fantasy_users (
+  telegram_id BIGINT PRIMARY KEY,
+  username TEXT,
+  wallet_balance NUMERIC(10,2) NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS fantasy_revenue (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  telegram_id BIGINT,
+  type TEXT NOT NULL,
+  amount NUMERIC(10,2) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fantasy_revenue_type
+  ON fantasy_revenue (type);
 
 CREATE TABLE IF NOT EXISTS fantasy_games (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

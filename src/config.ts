@@ -31,6 +31,10 @@ const envSchema = z.object({
     .string()
     .min(1, "SUPABASE_SERVICE_ROLE_KEY is required"),
   REDIS_URL: z.string().min(1, "REDIS_URL is required"),
+  VIRTUAL_WALLET_START_BALANCE: z.coerce
+    .number()
+    .positive()
+    .default(100),
   FANTASY_MONITOR_INTERVAL_MS: z.coerce
     .number()
     .int()

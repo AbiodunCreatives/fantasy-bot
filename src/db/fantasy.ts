@@ -170,7 +170,7 @@ async function attachFantasyMemberUsernames(
 
   const telegramIds = [...new Set(rows.map((row) => row.telegram_id))];
   const { data, error } = await supabase
-    .from("users")
+    .from("fantasy_users")
     .select("telegram_id, username")
     .in("telegram_id", telegramIds);
 
@@ -289,6 +289,20 @@ export async function listUserFantasyGames(
     })
     .map(normalizeFantasyGame)
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+}
+
+export async function listOpenFantasyGames(): Promise<FantasyGame[]> {
+  const { data, error } = await supabase
+    .from("fantasy_games")
+    .select("*")
+    .eq("status", "open")
+    .order("start_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []).map((row) => normalizeFantasyGame(row as FantasyGameRow));
 }
 
 export async function listDueOpenFantasyGames(
@@ -688,6 +702,42 @@ export async function listFantasyTradesForGameEvent(
   }
 
   return (data ?? []).map((row) => normalizeFantasyTrade(row as FantasyTradeRow));
+}
+
+export async function listFantasyTradesForGame(
+  gameId: string
+): Promise<FantasyTrade[]> {
+  const { data, error } = await supabase
+    .from("fantasy_trades")
+    .select("*")
+    .eq("game_id", gameId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []).map((row) => normalizeFantasyTrade(row as FantasyTradeRow));
+}
+
+export async function getLatestFantasyTradeForMember(
+  gameId: string,
+  telegramId: number
+): Promise<FantasyTrade | null> {
+  const { data, error } = await supabase
+    .from("fantasy_trades")
+    .select("*")
+    .eq("game_id", gameId)
+    .eq("telegram_id", telegramId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? normalizeFantasyTrade(data as FantasyTradeRow) : null;
 }
 
 export async function settleFantasyTrade(input: {

@@ -9,7 +9,7 @@ Standalone fantasy-only bot scaffold extracted from the main `edgetrader-bot` co
 - fantasy join confirmation callbacks
 - round monitoring job
 - fantasy activation, settlement, and finalization job
-- shared internal balance and revenue wiring
+- repo-owned virtual wallet and commission tracking
 
 ## Intentionally left out
 
@@ -20,21 +20,19 @@ Standalone fantasy-only bot scaffold extracted from the main `edgetrader-bot` co
 
 ## Current funding model
 
-This scaffold still uses the existing internal balance ledger via `apply_balance_delta`.
-That means the target database must already have the shared `user_access`, `balance_ledger`,
-`revenue`, `users`, `upsert_user`, and `apply_balance_delta` objects available.
+This repo is now virtual-only.
+User profiles, play balances, payouts, and commission records all live in this project's own
+Supabase tables, so a brand-new Supabase project is enough.
 
 ## Quick start
 
 1. Copy `.env.example` to `.env` and fill in Telegram, Supabase, and Redis values.
-2. Install dependencies with `pnpm install`.
-3. Run `pnpm start`.
+2. Run [`src/db/schema.sql`](./src/db/schema.sql) in the Supabase SQL editor.
+3. Install dependencies with `pnpm install`.
+4. Run `pnpm start`.
 
 ## Database notes
 
-The fantasy tables and related commission index live in [src/db/schema.sql](./src/db/schema.sql).
-If you later decide to go virtual-only, the main files to replace are:
-
-- `src/db/balances.ts`
-- `src/db/revenue.ts`
-- the entry-fee and payout calls inside `src/fantasy-league.ts`
+The full self-contained schema lives in [src/db/schema.sql](./src/db/schema.sql).
+New Telegram users are auto-created in `fantasy_users` with the configured
+`VIRTUAL_WALLET_START_BALANCE`, so fresh projects do not need any manual ledger setup.
