@@ -8,6 +8,15 @@ const optionalString = z.preprocess(
   z.string().optional()
 );
 
+function isRedisUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "redis:" || url.protocol === "rediss:";
+  } catch {
+    return false;
+  }
+}
+
 const envSchema = z.object({
   BOT_TOKEN: z.string().min(1, "BOT_TOKEN is required"),
   WEBHOOK_URL: z.preprocess(
@@ -30,7 +39,8 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z
     .string()
     .min(1, "SUPABASE_SERVICE_ROLE_KEY is required"),
-  REDIS_URL: z.string().min(1, "REDIS_URL is required"),
+  REDIS_MODE: z.enum(["redis", "memory"]).default("redis"),
+  REDIS_URL: optionalString,
   VIRTUAL_WALLET_START_BALANCE: z.coerce
     .number()
     .positive()
@@ -59,6 +69,20 @@ if (!parsed.success) {
 }
 
 const config = parsed.data;
+
+if (config.REDIS_MODE === "redis") {
+  if (!config.REDIS_URL) {
+    console.error("ERROR: REDIS_URL is required when REDIS_MODE=redis.");
+    process.exit(1);
+  }
+
+  if (!isRedisUrl(config.REDIS_URL)) {
+    console.error(
+      "ERROR: REDIS_URL must be a valid redis:// or rediss:// URL when REDIS_MODE=redis."
+    );
+    process.exit(1);
+  }
+}
 
 if (config.NODE_ENV === "production") {
   if (config.WEBHOOK_URL && !config.WEBHOOK_SECRET) {

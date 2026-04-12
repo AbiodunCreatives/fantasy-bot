@@ -26,10 +26,13 @@ Supabase tables, so a brand-new Supabase project is enough.
 
 ## Quick start
 
-1. Copy `.env.example` to `.env` and fill in Telegram, Supabase, and Redis values.
-2. Run [`src/db/schema.sql`](./src/db/schema.sql) in the Supabase SQL editor.
-3. Install dependencies with `pnpm install`.
-4. Run `pnpm start`.
+1. Copy `.env.example` to `.env` and fill in Telegram and Supabase values.
+2. Choose one cache mode:
+   `REDIS_MODE=redis` with a valid `redis://` or `rediss://` `REDIS_URL`, or
+   `REDIS_MODE=memory` for single-instance local/test runs.
+3. Run [`src/db/schema.sql`](./src/db/schema.sql) in the Supabase SQL editor.
+4. Install dependencies with `pnpm install`.
+5. Run `pnpm start`.
 
 ## Render notes
 
@@ -39,6 +42,7 @@ Use Node 22 and point the service at the source entry with a TypeScript-aware co
 - Start command: `pnpm start`
 
 If you prefer to run Node directly on Render, `node src/index.ts` also works with the current import setup.
+For a quick single-instance test deploy, set `REDIS_MODE=memory` in Render and leave `REDIS_URL` empty.
 
 ## Database notes
 
