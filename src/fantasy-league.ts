@@ -82,7 +82,6 @@ export const FANTASY_MIN_ENTRY_FEE = 1;
 export const FANTASY_MAX_ENTRY_FEE = 10;
 export const FANTASY_TRADE_AMOUNTS = [10, 25, 50, 100] as const;
 export const FANTASY_DEFAULT_DURATION_HOURS = 24;
-const FANTASY_ROUND_ALERT_MAX_PROGRESS = 0.2;
 const FANTASY_JOIN_PENDING_TTL_SECONDS = 5 * 60;
 const FANTASY_TRADE_REF_TTL_SECONDS = 15 * 60;
 const FANTASY_MISSED_STREAK_ALERT = 3;
@@ -1500,7 +1499,7 @@ export async function processFantasyLeagueRound(
   round: Round,
   pricing: RoundPricing
 ): Promise<void> {
-  if (round.pctElapsed > FANTASY_ROUND_ALERT_MAX_PROGRESS) {
+  if (Date.parse(round.closingDate) <= Date.now()) {
     return;
   }
 
