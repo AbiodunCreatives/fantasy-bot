@@ -1,8 +1,10 @@
 import { getCurrentRoundSnapshot } from "./bayse-market.ts";
 import { config } from "./config.ts";
 import { FANTASY_ASSET, processFantasyLeagueRound } from "./fantasy-league.ts";
+import { getDelayUntilNextAlignedTick } from "./utils/aligned-interval.ts";
 
 let fantasyMonitorTimer: NodeJS.Timeout | null = null;
+let fantasyMonitorRunning = false;
 let monitorInFlight = false;
 
 async function runFantasyMonitorTick(): Promise<void> {
@@ -34,27 +36,41 @@ async function runFantasyMonitorTick(): Promise<void> {
   }
 }
 
-export function startFantasyMonitor(): void {
-  if (fantasyMonitorTimer) {
+function scheduleNextFantasyMonitorTick(): void {
+  if (!fantasyMonitorRunning) {
     return;
   }
 
-  fantasyMonitorTimer = setInterval(() => {
-    void runFantasyMonitorTick();
-  }, config.FANTASY_MONITOR_INTERVAL_MS);
+  const delayMs = getDelayUntilNextAlignedTick(config.FANTASY_MONITOR_INTERVAL_MS);
 
+  fantasyMonitorTimer = setTimeout(async () => {
+    fantasyMonitorTimer = null;
+    await runFantasyMonitorTick();
+    scheduleNextFantasyMonitorTick();
+  }, delayMs);
+}
+
+export function startFantasyMonitor(): void {
+  if (fantasyMonitorRunning) {
+    return;
+  }
+
+  fantasyMonitorRunning = true;
   void runFantasyMonitorTick();
+  scheduleNextFantasyMonitorTick();
   console.log(
-    `[fantasy-monitor] Started on ${config.FANTASY_MONITOR_INTERVAL_MS}ms interval.`
+    `[fantasy-monitor] Started on aligned ${config.FANTASY_MONITOR_INTERVAL_MS}ms interval.`
   );
 }
 
 export function stopFantasyMonitor(): void {
+  fantasyMonitorRunning = false;
+
   if (!fantasyMonitorTimer) {
     return;
   }
 
-  clearInterval(fantasyMonitorTimer);
+  clearTimeout(fantasyMonitorTimer);
   fantasyMonitorTimer = null;
   console.log("[fantasy-monitor] Stopped.");
 }

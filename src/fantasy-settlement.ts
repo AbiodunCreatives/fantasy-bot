@@ -4,8 +4,10 @@ import {
   finalizeFantasyGames,
   settleFantasyLeagueTrades,
 } from "./fantasy-league.ts";
+import { getDelayUntilNextAlignedTick } from "./utils/aligned-interval.ts";
 
 let fantasySettlementTimer: NodeJS.Timeout | null = null;
+let fantasySettlementRunning = false;
 let settlementInFlight = false;
 
 async function runFantasySettlementTick(): Promise<void> {
@@ -38,27 +40,43 @@ async function runFantasySettlementTick(): Promise<void> {
   }
 }
 
-export function startFantasySettlementMonitor(): void {
-  if (fantasySettlementTimer) {
+function scheduleNextFantasySettlementTick(): void {
+  if (!fantasySettlementRunning) {
     return;
   }
 
-  fantasySettlementTimer = setInterval(() => {
-    void runFantasySettlementTick();
-  }, config.FANTASY_SETTLEMENT_INTERVAL_MS);
+  const delayMs = getDelayUntilNextAlignedTick(
+    config.FANTASY_SETTLEMENT_INTERVAL_MS
+  );
 
+  fantasySettlementTimer = setTimeout(async () => {
+    fantasySettlementTimer = null;
+    await runFantasySettlementTick();
+    scheduleNextFantasySettlementTick();
+  }, delayMs);
+}
+
+export function startFantasySettlementMonitor(): void {
+  if (fantasySettlementRunning) {
+    return;
+  }
+
+  fantasySettlementRunning = true;
   void runFantasySettlementTick();
+  scheduleNextFantasySettlementTick();
   console.log(
-    `[fantasy-settlement] Started on ${config.FANTASY_SETTLEMENT_INTERVAL_MS}ms interval.`
+    `[fantasy-settlement] Started on aligned ${config.FANTASY_SETTLEMENT_INTERVAL_MS}ms interval.`
   );
 }
 
 export function stopFantasySettlementMonitor(): void {
+  fantasySettlementRunning = false;
+
   if (!fantasySettlementTimer) {
     return;
   }
 
-  clearInterval(fantasySettlementTimer);
+  clearTimeout(fantasySettlementTimer);
   fantasySettlementTimer = null;
   console.log("[fantasy-settlement] Stopped.");
 }
