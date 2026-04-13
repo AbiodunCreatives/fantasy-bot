@@ -1104,12 +1104,13 @@ function buildArenaLiveText(input: {
     return lines.join("\n");
   }
 
+  const roundOpeningMs = Date.parse(input.snapshot.round.openingDate);
+  const roundClosingMs = Date.parse(input.snapshot.round.closingDate);
   const roundNumber = getGameRoundNumber(input.view.game, input.snapshot.round.openingDate);
   const tradeWindowCloseMs =
-    Date.parse(input.snapshot.round.openingDate) +
-    (Date.parse(input.snapshot.round.closingDate) -
-      Date.parse(input.snapshot.round.openingDate)) *
-      0.2;
+    Number.isFinite(roundOpeningMs) && Number.isFinite(roundClosingMs)
+      ? roundOpeningMs + (roundClosingMs - roundOpeningMs) * 0.2
+      : null;
 
   lines.push(
     "",
@@ -1122,7 +1123,9 @@ function buildArenaLiveText(input: {
     )}`,
     `Round time left: ${formatRoundCountdown(input.snapshot.round.closingDate)}`,
     `Round closes: ${formatDateTime(input.snapshot.round.closingDate)}`,
-    tradeWindowCloseMs > Date.now()
+    tradeWindowCloseMs === null
+      ? "Bot entry window: unavailable"
+      : tradeWindowCloseMs > Date.now()
       ? `Bot entry window: ${formatCompactDuration(tradeWindowCloseMs - Date.now())} left`
       : "Bot entry window: closed for this round"
   );

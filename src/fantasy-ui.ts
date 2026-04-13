@@ -146,6 +146,11 @@ export function getRoundsForDurationHours(hours: number): number {
 
 export function getGameRoundNumber(game: FantasyGame, roundOpeningDate: string): number {
   const elapsedMs = Date.parse(roundOpeningDate) - Date.parse(game.start_at);
+
+  if (!Number.isFinite(elapsedMs)) {
+    return 1;
+  }
+
   return Math.max(1, Math.floor(elapsedMs / (15 * 60 * 1000)) + 1);
 }
 

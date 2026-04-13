@@ -14,6 +14,7 @@ const BAYSE_ASSET_SLUG_MATCHERS: Record<BayseAsset, string> = {
   ETH: "eth",
   SOL: "sol",
 };
+const BAYSE_ROUND_DURATION_MS = 15 * 60 * 1000;
 
 interface BayseMarketRaw {
   id: string;
@@ -117,9 +118,28 @@ function normalizeRoundPricing(
   };
 }
 
+function hasUsableRoundPricing(pricing: RoundPricing | null): pricing is RoundPricing {
+  if (!pricing) {
+    return false;
+  }
+
+  return (
+    pricing.upPrice > 0 &&
+    pricing.downPrice > 0 &&
+    pricing.marketId.trim().length > 0 &&
+    (pricing.upOutcomeId?.trim().length ?? 0) > 0 &&
+    (pricing.downOutcomeId?.trim().length ?? 0) > 0
+  );
+}
+
 function normalizeRound(event: BayseEventRaw, now: number): Round {
-  const openingTime = Date.parse(event.openingDate);
   const closingTime = Date.parse(event.closingDate);
+  const openingTimeRaw = Date.parse(event.openingDate);
+  const openingTime = Number.isFinite(openingTimeRaw)
+    ? openingTimeRaw
+    : Number.isFinite(closingTime)
+      ? closingTime - BAYSE_ROUND_DURATION_MS
+      : now;
   const windowMs = closingTime - openingTime;
   const elapsedMs = now - openingTime;
   const pctElapsed = windowMs > 0 ? clamp(elapsedMs / windowMs, 0, 1) : 1;
@@ -127,7 +147,7 @@ function normalizeRound(event: BayseEventRaw, now: number): Round {
   return {
     eventId: event.id,
     slug: event.slug,
-    openingDate: event.openingDate,
+    openingDate: new Date(openingTime).toISOString(),
     closingDate: event.closingDate,
     eventThreshold: event.eventThreshold ?? null,
     pctElapsed,
@@ -141,7 +161,8 @@ function getEmbeddedRoundPricing(event: BayseEventRaw): RoundPricing | null {
     return null;
   }
 
-  return normalizeRoundPricing(event, market);
+  const pricing = normalizeRoundPricing(event, market);
+  return hasUsableRoundPricing(pricing) ? pricing : null;
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
