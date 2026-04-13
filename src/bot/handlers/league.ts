@@ -1,6 +1,7 @@
 import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 
+import { getCurrentRoundSnapshot } from "../../bayse-market.ts";
 import { getBalance } from "../../db/balances.ts";
 import {
   addFantasyPlayBalance,
@@ -30,11 +31,15 @@ import {
   ARENA_ENTRY_FEE_OPTIONS,
   anonymizePlayer,
   buildShareInviteUrl,
+  formatBtcPrice,
   formatDurationHours,
   formatCompactDuration,
+  formatProbabilityPrice,
   formatSignedPercent,
   formatWholeMoney,
+  formatRoundCountdown,
   getGameDurationHours,
+  getGameRoundNumber,
   getApproxRoundsUntil,
   getRoundsForDurationHours,
 } from "../../fantasy-ui.ts";
@@ -46,6 +51,7 @@ const LOBBY_LIVE = "lobby:live";
 const ARENA_CREATE = "arena:create";
 const ARENA_DURATION_PREFIX = "arena:duration:";
 const ARENA_BACK_TO_LOBBY = "arena:lobby";
+const ARENA_LIVE_PREFIX = "arena:live:";
 const ARENA_REFRESH_PREFIX = "arena:refresh:";
 const ARENA_CATCH_UP_PREFIX = "arena:catch:";
 const ARENA_REMIND_PREFIX = "arena:remind:";
@@ -54,6 +60,11 @@ const ARENA_JOIN_DECLINE = "fantasy:join:decline";
 const FUNDS_ADD = "funds:add";
 const FUNDS_CUSTOM = "funds:custom";
 const FUNDS_BACK_TO_LOBBY = "funds:lobby";
+
+type FantasyLeagueStatusViewData = Awaited<
+  ReturnType<typeof getFantasyLeagueStatusView>
+>;
+type ArenaCurrentRoundSnapshot = Awaited<ReturnType<typeof getCurrentRoundSnapshot>>;
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -344,16 +355,30 @@ function buildArenaLobbyKeyboard(input: {
   live: Array<{ code: string; entryFee: number }>;
   filling: Array<{ code: string; entryFee: number }>;
   open: Array<{ code: string; entryFee: number }>;
+  joinedCodes: string[];
   liveOnly?: boolean;
 }): InlineKeyboard {
   const keyboard = new InlineKeyboard();
+  const joinedCodes = new Set(input.joinedCodes);
 
   for (const card of input.live) {
-    keyboard.text(`Watch ${card.code}`, `arena:watch:${card.code}`).row();
+    keyboard
+      .text(
+        `${joinedCodes.has(card.code) ? "Live" : "Watch"} ${card.code}`,
+        joinedCodes.has(card.code)
+          ? `${ARENA_LIVE_PREFIX}${card.code}`
+          : `arena:watch:${card.code}`
+      )
+      .row();
   }
 
   if (!input.liveOnly) {
     for (const card of [...input.filling, ...input.open]) {
+      if (joinedCodes.has(card.code)) {
+        keyboard.text(`Open ${card.code}`, `arena:status:${card.code}`).row();
+        continue;
+      }
+
       keyboard
         .text(
           `Join ${card.code} - ${formatMoney(card.entryFee, {
@@ -551,11 +576,45 @@ function buildCatchUpText(input: {
   ].join("\n");
 }
 
+function buildArenaStatusKeyboard(code: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("⚡ Live market", `${ARENA_LIVE_PREFIX}${code}`)
+    .text("Full leaderboard", `arena:board:${code}`)
+    .row()
+    .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
+}
+
+function buildArenaLiveKeyboard(input: {
+  code: string;
+  canCatchUp: boolean;
+  marketUrl?: string;
+}): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  if (input.marketUrl) {
+    keyboard.url("Open Bayse", input.marketUrl);
+  }
+
+  keyboard.text("Leaderboard", `arena:board:${input.code}`);
+
+  if (input.canCatchUp) {
+    keyboard.row().text("⬆ How to catch #1", `${ARENA_CATCH_UP_PREFIX}${input.code}`);
+  }
+
+  keyboard
+    .row()
+    .text("🔄 Refresh live", `${ARENA_LIVE_PREFIX}${input.code}`)
+    .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
+
+  return keyboard;
+}
+
 function buildArenaBoardKeyboard(input: {
   code: string;
   canCatchUp: boolean;
 }): InlineKeyboard {
   const keyboard = new InlineKeyboard();
+  keyboard.text("⚡ Live market", `${ARENA_LIVE_PREFIX}${input.code}`).row();
 
   if (input.canCatchUp) {
     keyboard.text("⬆ How to catch #1", `${ARENA_CATCH_UP_PREFIX}${input.code}`);
@@ -601,6 +660,7 @@ function buildLeagueHelpText(): string {
     "/league create 5 12 - Create a 12h BTC fantasy arena with $5 entry",
     "/league join ABC123 - Review and join an arena by code",
     "/league board ABC123 - View the arena leaderboard",
+    "/league live ABC123 - View the current BTC round and countdown",
     "/league status ABC123 - View arena details",
     "",
     "Rules:",
@@ -827,9 +887,13 @@ async function editTradePromptMessage(
 
 async function renderArenaLobby(
   ctx: Context,
+  telegramId: number,
   options?: { liveOnly?: boolean }
 ): Promise<void> {
-  const lobby = await listFantasyArenaLobby();
+  const [lobby, snapshots] = await Promise.all([
+    listFantasyArenaLobby(),
+    listFantasyLeagueSnapshots(telegramId),
+  ]);
   const mapCard = (card: (typeof lobby.live)[number]) => ({
     code: card.game.code,
     entryFee: card.game.entry_fee,
@@ -846,6 +910,7 @@ async function renderArenaLobby(
   const live = lobby.live.map(mapCard);
   const filling = lobby.filling.map(mapCard);
   const open = lobby.open.map(mapCard);
+  const joinedCodes = snapshots.map((snapshot) => snapshot.game.code);
 
   await editTradePromptMessage(
     ctx,
@@ -859,6 +924,7 @@ async function renderArenaLobby(
       live,
       filling,
       open,
+      joinedCodes,
       liveOnly: options?.liveOnly,
     })
   );
@@ -880,7 +946,7 @@ async function openLobbyOrFundingPrompt(
     return;
   }
 
-  await renderArenaLobby(ctx, options);
+  await renderArenaLobby(ctx, telegramId, options);
 }
 
 async function renderArenaStatusList(ctx: Context, telegramId: number): Promise<void> {
@@ -956,6 +1022,138 @@ async function presentJoinPreview(
       afterJoiningBalance: roundMoney(balance - preview.game.entry_fee),
     }),
     buildFantasyJoinPreviewKeyboard(preview.game.entry_fee)
+  );
+}
+
+async function resolveArenaLiveCode(
+  telegramId: number,
+  code: string | undefined
+): Promise<string | null> {
+  if (code?.trim()) {
+    return code.trim().toUpperCase();
+  }
+
+  const snapshots = await listFantasyLeagueSnapshots(telegramId);
+  const active = snapshots.filter(
+    (snapshot) =>
+      snapshot.game.status === "active" && Date.parse(snapshot.game.end_at) > Date.now()
+  );
+
+  if (active.length === 1) {
+    return active[0]?.game.code ?? null;
+  }
+
+  return null;
+}
+
+function buildArenaLiveText(input: {
+  view: FantasyLeagueStatusViewData;
+  snapshot: ArenaCurrentRoundSnapshot | null;
+  spectating?: boolean;
+}): string {
+  const arenaMsRemaining = Date.parse(input.view.game.end_at) - Date.now();
+  const joined = Boolean(input.view.me);
+  const isActive =
+    input.view.game.status === "active" && Date.parse(input.view.game.end_at) > Date.now();
+  const lines: string[] = [];
+
+  if (input.spectating && !joined) {
+    lines.push("👀 Spectating", "");
+  }
+
+  lines.push(
+    `⚡ Arena ${input.view.game.code}  •  ${isActive ? "LIVE" : input.view.game.status.toUpperCase()}`,
+    ""
+  );
+
+  if (joined) {
+    const returnPct =
+      ((input.view.me!.virtual_balance - input.view.game.virtual_start_balance) /
+        input.view.game.virtual_start_balance) *
+      100;
+
+    lines.push(
+      `Your position: #${input.view.me!.place} of ${input.view.memberCount}`,
+      `Stack: ${formatWholeMoney(input.view.me!.virtual_balance)}  (${formatSignedPercent(
+        returnPct
+      )})`,
+      `Prize if game ends now: ${formatMoney(input.view.prizeIfEndedNow)}`
+    );
+  } else {
+    lines.push(`Players: ${input.view.memberCount}`, "Mode: Spectator");
+  }
+
+  if (!isActive) {
+    lines.push(
+      "",
+      input.view.game.status === "open"
+        ? `Arena starts: ${formatDateTime(input.view.game.start_at)}`
+        : `Arena ended: ${formatDateTime(input.view.game.end_at)}`,
+      input.view.game.status === "open"
+        ? `Starts in: ~${Math.max(1, getApproxRoundsUntil(input.view.game.start_at)) * 15} min`
+        : "No live Bayse market for this arena right now."
+    );
+
+    return lines.join("\n");
+  }
+
+  lines.push(`Arena time left: ${formatCompactDuration(arenaMsRemaining)}`);
+
+  if (!input.snapshot?.pricing) {
+    lines.push("", "Current Bayse BTC market is unavailable right now. Try again in a minute.");
+    return lines.join("\n");
+  }
+
+  const roundNumber = getGameRoundNumber(input.view.game, input.snapshot.round.openingDate);
+  const tradeWindowCloseMs =
+    Date.parse(input.snapshot.round.openingDate) +
+    (Date.parse(input.snapshot.round.closingDate) -
+      Date.parse(input.snapshot.round.openingDate)) *
+      0.2;
+
+  lines.push(
+    "",
+    `Current round: #${roundNumber}`,
+    `BTC/USD: ${formatBtcPrice(
+      input.snapshot.pricing.eventThreshold ?? input.snapshot.round.eventThreshold
+    )}`,
+    `↑ UP  ${formatProbabilityPrice(input.snapshot.pricing.upPrice)}   •   ↓ DOWN  ${formatProbabilityPrice(
+      input.snapshot.pricing.downPrice
+    )}`,
+    `Round time left: ${formatRoundCountdown(input.snapshot.round.closingDate)}`,
+    `Round closes: ${formatDateTime(input.snapshot.round.closingDate)}`,
+    tradeWindowCloseMs > Date.now()
+      ? `Bot entry window: ${formatCompactDuration(tradeWindowCloseMs - Date.now())} left`
+      : "Bot entry window: closed for this round"
+  );
+
+  return lines.join("\n");
+}
+
+async function renderArenaLiveView(
+  ctx: Context,
+  telegramId: number,
+  code: string,
+  options?: { spectating?: boolean }
+): Promise<void> {
+  const view = await getFantasyLeagueStatusView(telegramId, code);
+  const snapshot =
+    view.game.status === "active" && Date.parse(view.game.end_at) > Date.now()
+      ? await getCurrentRoundSnapshot("BTC")
+      : null;
+
+  await editTradePromptMessage(
+    ctx,
+    buildArenaLiveText({
+      view,
+      snapshot,
+      spectating: options?.spectating,
+    }),
+    buildArenaLiveKeyboard({
+      code: view.game.code,
+      canCatchUp: Boolean(view.me && view.me.place > 1),
+      marketUrl: snapshot?.pricing?.url,
+    })
   );
 }
 
@@ -1068,7 +1266,7 @@ async function renderArenaWatchView(
   telegramId: number,
   code: string
 ): Promise<void> {
-  await renderArenaBoardView(ctx, telegramId, code, { spectating: true });
+  await renderArenaLiveView(ctx, telegramId, code, { spectating: true });
 }
 
 async function getArenaInviteShareUrl(
@@ -1279,6 +1477,15 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
     return;
   }
 
+  if (data.startsWith(ARENA_LIVE_PREFIX)) {
+    try {
+      await renderArenaLiveView(ctx, ctx.from.id, data.slice(ARENA_LIVE_PREFIX.length));
+    } catch (error) {
+      await replyArenaLookupError(ctx, error);
+    }
+    return;
+  }
+
   if (data.startsWith("arena:watch:")) {
     try {
       await renderArenaWatchView(ctx, ctx.from.id, data.slice("arena:watch:".length));
@@ -1448,6 +1655,41 @@ export async function handleLeague(ctx: Context): Promise<void> {
       await presentJoinPreview(ctx, ctx.from.id, code);
     } catch (error) {
       await replyFantasyJoinError(ctx, error, code);
+    }
+
+    return;
+  }
+
+  if (subcommand === "live") {
+    const code = await resolveArenaLiveCode(ctx.from.id, args[1]);
+
+    if (!code) {
+      await ctx.reply("Usage: /league live ABC123");
+      return;
+    }
+
+    try {
+      const view = await getFantasyLeagueStatusView(ctx.from.id, code);
+      const snapshot =
+        view.game.status === "active" && Date.parse(view.game.end_at) > Date.now()
+          ? await getCurrentRoundSnapshot("BTC")
+          : null;
+
+      await ctx.reply(
+        buildArenaLiveText({
+          view,
+          snapshot,
+        }),
+        {
+          reply_markup: buildArenaLiveKeyboard({
+            code,
+            canCatchUp: Boolean(view.me && view.me.place > 1),
+            marketUrl: snapshot?.pricing?.url,
+          }),
+        }
+      );
+    } catch (error) {
+      await replyArenaLookupError(ctx, error);
     }
 
     return;
