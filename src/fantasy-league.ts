@@ -1,9 +1,9 @@
 import { Api, InlineKeyboard } from "grammy";
 
 import {
-  getCurrentRound,
   getEventPricing,
   getEvent,
+  getNextRoundStart,
   type Round,
   type RoundPricing,
 } from "./bayse-market.ts";
@@ -47,10 +47,13 @@ import {
   type FantasyTradeDirection,
 } from "./db/fantasy.ts";
 import {
+  ARENA_DURATION_HOURS_OPTIONS,
   anonymizePlayer,
   buildShareResultUrl,
+  formatDurationHours,
   formatBtcPrice,
   formatCompactDuration,
+  getGameDurationHours,
   formatMediumDateTime,
   formatMoney,
   formatProbabilityPrice,
@@ -72,12 +75,12 @@ const tgApi = new Api(config.BOT_TOKEN);
 let cachedBotUsername: string | null = null;
 
 export const FANTASY_ASSET = "BTC" as const;
-export const FANTASY_DURATION_MS = 24 * 60 * 60 * 1000;
 export const FANTASY_ENTRY_MULTIPLIER = 100;
 export const FANTASY_COMMISSION_RATE = 0.08;
 export const FANTASY_MIN_ENTRY_FEE = 1;
 export const FANTASY_MAX_ENTRY_FEE = 10;
 export const FANTASY_TRADE_AMOUNTS = [10, 25, 50, 100] as const;
+export const FANTASY_DEFAULT_DURATION_HOURS = 24;
 const FANTASY_ROUND_ALERT_MAX_PROGRESS = 0.2;
 const FANTASY_JOIN_PENDING_TTL_SECONDS = 5 * 60;
 const FANTASY_TRADE_REF_TTL_SECONDS = 15 * 60;
@@ -183,6 +186,29 @@ const activePromptTimers = new Map<string, NodeJS.Timeout>();
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function getFantasyDurationMs(durationHours: number): number {
+  return durationHours * 60 * 60 * 1000;
+}
+
+function normalizeFantasyDurationHours(durationHours: number): number {
+  const normalizedHours = Math.round(durationHours);
+
+  if (
+    !Number.isInteger(normalizedHours) ||
+    !ARENA_DURATION_HOURS_OPTIONS.includes(
+      normalizedHours as (typeof ARENA_DURATION_HOURS_OPTIONS)[number]
+    )
+  ) {
+    throw new Error(
+      `Duration must be one of ${ARENA_DURATION_HOURS_OPTIONS
+        .map((hours) => formatDurationHours(hours))
+        .join(", ")}.`
+    );
+  }
+
+  return normalizedHours;
 }
 
 async function getBotUsername(): Promise<string> {
@@ -956,7 +982,7 @@ function buildFinalArenaMessage(input: {
   return [
     `🏁 Arena ${input.game.code} — FINAL`,
     "",
-    `Duration: 24h  •  ${input.roundsPlayed} rounds played`,
+    `Duration: ${formatDurationHours(getGameDurationHours(input.game))}  •  ${input.roundsPlayed} rounds played`,
     "",
     ...standings,
     "",
@@ -1195,9 +1221,11 @@ export function clearFantasyTradePromptState(
 
 export async function createFantasyLeagueGame(
   creatorTelegramId: number,
-  entryFee: number
+  entryFee: number,
+  durationHours = FANTASY_DEFAULT_DURATION_HOURS
 ): Promise<FantasyGame> {
   const normalizedEntryFee = roundMoney(entryFee);
+  const normalizedDurationHours = normalizeFantasyDurationHours(durationHours);
 
   if (
     !Number.isInteger(normalizedEntryFee) ||
@@ -1209,14 +1237,15 @@ export async function createFantasyLeagueGame(
     );
   }
 
-  const currentRound = await getCurrentRound(FANTASY_ASSET);
+  const startAt = await getNextRoundStart(FANTASY_ASSET);
 
-  if (!currentRound) {
-    throw new Error("No open BTC 15M round found right now.");
+  if (!startAt) {
+    throw new Error("No upcoming BTC 15M round found right now.");
   }
 
-  const startAt = currentRound.closingDate;
-  const endAt = new Date(Date.parse(startAt) + FANTASY_DURATION_MS).toISOString();
+  const endAt = new Date(
+    Date.parse(startAt) + getFantasyDurationMs(normalizedDurationHours)
+  ).toISOString();
   const virtualStartBalance = getVirtualStartBalance(normalizedEntryFee);
   const code = await generateUniqueFantasyGameCode();
   const debited = await debitBalance(creatorTelegramId, normalizedEntryFee, {
@@ -1431,7 +1460,8 @@ export async function activateDueFantasyGames(): Promise<void> {
       ...buildPrizePoolLines(refreshed.entry_fee, leaderboard.length),
       `Virtual bankroll: ${formatMoney(refreshed.virtual_start_balance)}`,
       "",
-      "You will receive a fantasy BTC round prompt for each Bayse BTC 15M round over the next 24 hours.",
+      `Duration: ${formatDurationHours(getGameDurationHours(refreshed))}`,
+      "You will receive a fantasy BTC round prompt for each Bayse BTC 15M round until the arena ends.",
     ].join("\n");
 
     await Promise.all(
@@ -1817,7 +1847,15 @@ export async function settleFantasyLeagueTrades(): Promise<void> {
           const streak = await redis.incr(missedKey);
 
           if (streak === 1) {
-            await redis.expire(missedKey, Math.ceil(FANTASY_DURATION_MS / 1000));
+            await redis.expire(
+              missedKey,
+              Math.max(
+                60,
+                Math.ceil(
+                  (Date.parse(game.end_at) - Date.parse(game.start_at)) / 1000
+                )
+              )
+            );
           }
 
           if (streak === FANTASY_MISSED_STREAK_ALERT) {
@@ -2022,7 +2060,7 @@ export async function getFantasyLeagueJoinSummary(
     `Virtual Funds: ${formatMoney(game.virtual_start_balance)}`,
     `Prize Pool: ${formatMoney(game.prize_pool)}`,
     `Players joined: ${leaderboard.length}`,
-    "Duration: 24 hours",
+    `Duration: ${formatDurationHours(getGameDurationHours(game))}`,
     `Starts: ${formatMediumDateTime(game.start_at)}`,
     `Ends: ${formatMediumDateTime(game.end_at)}`,
     "",

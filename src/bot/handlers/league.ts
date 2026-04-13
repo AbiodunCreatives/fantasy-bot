@@ -26,13 +26,17 @@ import {
   type FantasyTradePlacementResult,
 } from "../../fantasy-league.ts";
 import {
+  ARENA_DURATION_HOURS_OPTIONS,
   ARENA_ENTRY_FEE_OPTIONS,
   anonymizePlayer,
   buildShareInviteUrl,
+  formatDurationHours,
   formatCompactDuration,
   formatSignedPercent,
   formatWholeMoney,
+  getGameDurationHours,
   getApproxRoundsUntil,
+  getRoundsForDurationHours,
 } from "../../fantasy-ui.ts";
 
 const START_HOW_IT_WORKS = "start:how";
@@ -40,6 +44,7 @@ const START_LOBBY = "start:lobby";
 const LOBBY_REFRESH = "lobby:refresh";
 const LOBBY_LIVE = "lobby:live";
 const ARENA_CREATE = "arena:create";
+const ARENA_DURATION_PREFIX = "arena:duration:";
 const ARENA_BACK_TO_LOBBY = "arena:lobby";
 const ARENA_REFRESH_PREFIX = "arena:refresh:";
 const ARENA_CATCH_UP_PREFIX = "arena:catch:";
@@ -80,7 +85,7 @@ function buildArenaNotFoundText(): string {
   return [
     "Arena not found.",
     "",
-    "Check the code and try again, or create your own with /league create <entry_fee>.",
+    "Check the code and try again, or create your own with /league create <entry_fee> <hours>.",
   ].join("\n");
 }
 
@@ -88,7 +93,7 @@ function buildArenaStartedText(): string {
   return [
     "This arena has already started.",
     "",
-    "You can create your own with /league create <entry_fee>.",
+    "You can create your own with /league create <entry_fee> <hours>.",
   ].join("\n");
 }
 
@@ -125,7 +130,7 @@ function buildHowItWorksText(): string {
   return [
     "1. Pay entry fee ($1-$10)",
     "2. Get virtual funds = fee × 100",
-    "3. Trade each 15-min BTC round for 24hrs",
+    "3. Trade each 15-min BTC round for the arena duration",
     "4. Top bankroll splits the prize pool",
   ].join("\n");
 }
@@ -141,7 +146,7 @@ function buildStartOnboardingText(input: {
   return [
     `Welcome, ${input.firstName}.`,
     "",
-    "Bayse Arena is 24h BTC fantasy trading where the best bankroll wins the pot.",
+    "Bayse Arena is BTC fantasy trading where the best bankroll wins the pot.",
     `Current balance: ${formatMoney(input.balance)}`,
   ].join("\n");
 }
@@ -170,6 +175,46 @@ function buildCreateArenaPickerKeyboard(): InlineKeyboard {
   }
 
   keyboard.row().text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
+  return keyboard;
+}
+
+function buildCreateArenaDurationText(input: {
+  balance: number;
+  entryFee: number;
+}): string {
+  return [
+    "New Arena",
+    "",
+    `Entry fee: ${formatMoney(input.entryFee, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    })}`,
+    "Pick how long the arena should run:",
+    "Bayse runs 4 rounds every hour.",
+    "",
+    `Your balance: ${formatMoney(input.balance)}`,
+  ].join("\n");
+}
+
+function buildCreateArenaDurationKeyboard(entryFee: number): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  ARENA_DURATION_HOURS_OPTIONS.forEach((hours, index) => {
+    keyboard.text(
+      `${formatDurationHours(hours)} (${getRoundsForDurationHours(hours)}r)`,
+      `${ARENA_DURATION_PREFIX}${entryFee}:${hours}`
+    );
+
+    if (index % 2 === 1 && index < ARENA_DURATION_HOURS_OPTIONS.length - 1) {
+      keyboard.row();
+    }
+  });
+
+  keyboard
+    .row()
+    .text("Pick a different fee", ARENA_CREATE)
+    .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
+
   return keyboard;
 }
 
@@ -335,6 +380,7 @@ function buildArenaLobbyKeyboard(input: {
 function buildFantasyJoinPreviewText(input: {
   code: string;
   entryFee: number;
+  durationHours: number;
   virtualFunds: number;
   prizePool: number;
   playerCount: number;
@@ -350,6 +396,9 @@ function buildFantasyJoinPreviewText(input: {
     input.roundsUntilStart <= 0
       ? "Starts next round"
       : `Starts in: ${input.roundsUntilStart} rounds (~${input.roundsUntilStart * 15} min)`;
+  const durationText = `Duration: ${formatDurationHours(
+    input.durationHours
+  )}  •  ${getRoundsForDurationHours(input.durationHours)} rounds`;
 
   return [
     `⚡ Arena ${input.code}`,
@@ -359,6 +408,7 @@ function buildFantasyJoinPreviewText(input: {
     `Your cut if you win 1st: ${formatMoney(input.projectedFirstPrize)}`,
     "",
     startsInText,
+    durationText,
     input.currentLeaderName && input.currentLeaderReturnPct !== null
       ? `Current leader: ${input.currentLeaderName}  ${formatSignedPercent(
           input.currentLeaderReturnPct
@@ -387,6 +437,7 @@ function buildFantasyCreateSuccessText(input: {
   prizePool: number;
   virtualStack: number;
   roundsUntilStart: number;
+  durationHours: number;
 }): string {
   return [
     "✅ Arena created",
@@ -394,6 +445,7 @@ function buildFantasyCreateSuccessText(input: {
     `Code: ${input.code}`,
     `Prize pool: ${formatMoney(input.prizePool)} (grows as others join)`,
     `Your virtual stack: ${formatWholeMoney(input.virtualStack)}`,
+    `Duration: ${formatDurationHours(input.durationHours)}`,
     input.roundsUntilStart <= 0
       ? "Starts: next BTC round"
       : `Starts: next BTC round (~${input.roundsUntilStart * 15} min)`,
@@ -409,6 +461,7 @@ function buildFantasyJoinSuccessText(input: {
   prizePool: number;
   playerCount: number;
   roundsUntilStart: number;
+  durationHours: number;
 }): string {
   return [
     "You're in. 🟢",
@@ -416,6 +469,7 @@ function buildFantasyJoinSuccessText(input: {
     `Arena: ${input.code}`,
     `Your virtual stack: ${formatWholeMoney(input.virtualBalance)}`,
     `Prize pool: ${formatMoney(input.prizePool)} (${input.playerCount} players)`,
+    `Duration: ${formatDurationHours(input.durationHours)}`,
     "",
     input.roundsUntilStart <= 0
       ? "Starts in: next BTC round"
@@ -544,14 +598,15 @@ function buildLeagueHelpText(): string {
     "Commands:",
     "/start - Open the welcome screen and lobby",
     "/league - See your active arenas or browse the lobby",
-    "/league create 5 - Create a BTC 24h fantasy arena with $5 entry",
+    "/league create 5 12 - Create a 12h BTC fantasy arena with $5 entry",
     "/league join ABC123 - Review and join an arena by code",
     "/league board ABC123 - View the arena leaderboard",
     "/league status ABC123 - View arena details",
     "",
     "Rules:",
     "- BTC only in v1",
-    "- Next 24 hours of Bayse BTC 15M rounds",
+    "- Arena durations: 3h, 9h, 12h, or 24h",
+    "- Four Bayse BTC 15M rounds per hour",
     "- Entry fee buys virtual bankroll at 100x",
     "- One fantasy trade per round",
     "- Bot keeps 8% commission when the league closes",
@@ -574,6 +629,62 @@ async function replyArenaLookupError(ctx: Context, error: unknown): Promise<void
   }
 
   await ctx.reply("Something went wrong. Please try again.");
+}
+
+async function replyFantasyCreateError(
+  ctx: Context,
+  error: unknown,
+  entryFee: number
+): Promise<void> {
+  const message = error instanceof Error ? error.message : "";
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes("insufficient play balance") ||
+    normalized.includes("insufficient balance")
+  ) {
+    if (!ctx.from) {
+      await editTradePromptMessage(ctx, "Something went wrong. Please try again.");
+      return;
+    }
+
+    const balance = await getBalance(ctx.from.id);
+    await editTradePromptMessage(
+      ctx,
+      buildArenaInsufficientBalanceText(entryFee, balance),
+      buildCreateInsufficientKeyboard()
+    );
+    return;
+  }
+
+  if (
+    normalized.includes("entry fee must") ||
+    normalized.includes("duration must")
+  ) {
+    await editTradePromptMessage(ctx, message);
+    return;
+  }
+
+  if (
+    normalized.includes("no upcoming btc 15m round") ||
+    normalized.includes("no open btc 15m round")
+  ) {
+    await editTradePromptMessage(
+      ctx,
+      "No Bayse BTC round is available right now. Try again in a minute."
+    );
+    return;
+  }
+
+  if (normalized.includes("bayse api")) {
+    await editTradePromptMessage(
+      ctx,
+      "I couldn't reach Bayse right now. Please try again in a moment."
+    );
+    return;
+  }
+
+  await editTradePromptMessage(ctx, "Something went wrong. Please try again.");
 }
 
 async function replyFantasyJoinError(
@@ -832,6 +943,7 @@ async function presentJoinPreview(
     buildFantasyJoinPreviewText({
       code: preview.game.code,
       entryFee: preview.game.entry_fee,
+      durationHours: getGameDurationHours(preview.game),
       virtualFunds: preview.game.virtual_start_balance,
       prizePool: preview.projectedPrizePool,
       playerCount: preview.memberCount,
@@ -959,15 +1071,53 @@ async function renderArenaWatchView(
   await renderArenaBoardView(ctx, telegramId, code, { spectating: true });
 }
 
-async function createArenaFromSelection(
+async function getArenaInviteShareUrl(
+  ctx: Context,
+  input: { code: string; entryFee: number }
+): Promise<string | undefined> {
+  try {
+    const me = await ctx.api.getMe();
+
+    if (!me.username) {
+      return undefined;
+    }
+
+    return buildShareInviteUrl({
+      botUsername: me.username,
+      code: input.code,
+      entryFee: input.entryFee,
+    });
+  } catch (error) {
+    console.warn("[bot] Failed to build arena invite share URL:", error);
+    return undefined;
+  }
+}
+
+async function renderCreateArenaDurationPicker(
   ctx: Context,
   telegramId: number,
   entryFee: number
 ): Promise<void> {
-  const game = await createFantasyLeagueGame(telegramId, entryFee);
-  const me = await ctx.api.getMe();
-  const shareUrl = buildShareInviteUrl({
-    botUsername: me.username,
+  const balance = await getBalance(telegramId);
+
+  await editTradePromptMessage(
+    ctx,
+    buildCreateArenaDurationText({
+      balance,
+      entryFee,
+    }),
+    buildCreateArenaDurationKeyboard(entryFee)
+  );
+}
+
+async function createArenaFromSelection(
+  ctx: Context,
+  telegramId: number,
+  entryFee: number,
+  durationHours: number
+): Promise<void> {
+  const game = await createFantasyLeagueGame(telegramId, entryFee, durationHours);
+  const shareUrl = await getArenaInviteShareUrl(ctx, {
     code: game.code,
     entryFee: game.entry_fee,
   });
@@ -979,6 +1129,7 @@ async function createArenaFromSelection(
       prizePool: game.prize_pool,
       virtualStack: game.virtual_start_balance,
       roundsUntilStart: getApproxRoundsUntil(game.start_at),
+      durationHours: getGameDurationHours(game),
     }),
     buildFantasyCreateSuccessKeyboard(shareUrl)
   );
@@ -1094,22 +1245,26 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
       return;
     }
 
+    await renderCreateArenaDurationPicker(ctx, ctx.from.id, entryFee);
+    return;
+  }
+
+  if (data.startsWith(ARENA_DURATION_PREFIX)) {
+    const [entryFeeRaw, durationHoursRaw] = data
+      .slice(ARENA_DURATION_PREFIX.length)
+      .split(":");
+    const entryFee = Number.parseFloat(entryFeeRaw ?? "");
+    const durationHours = Number.parseInt(durationHoursRaw ?? "", 10);
+
+    if (!Number.isFinite(entryFee) || !Number.isInteger(durationHours)) {
+      await ctx.reply("Something went wrong. Please try again.");
+      return;
+    }
+
     try {
-      await createArenaFromSelection(ctx, ctx.from.id, entryFee);
+      await createArenaFromSelection(ctx, ctx.from.id, entryFee, durationHours);
     } catch (error) {
-      const message = error instanceof Error ? error.message.toLowerCase() : "";
-
-      if (message.includes("insufficient play balance")) {
-        const balance = await getBalance(ctx.from.id);
-        await editTradePromptMessage(
-          ctx,
-          buildArenaInsufficientBalanceText(entryFee, balance),
-          buildCreateInsufficientKeyboard()
-        );
-        return;
-      }
-
-      throw error;
+      await replyFantasyCreateError(ctx, error, entryFee);
     }
 
     return;
@@ -1231,6 +1386,7 @@ export async function handleLeague(ctx: Context): Promise<void> {
 
   if (subcommand === "create") {
     const entryFee = Number.parseFloat(args[1] ?? "");
+    const durationHours = Number.parseInt(args[2] ?? "", 10);
 
     if (!Number.isFinite(entryFee)) {
       const balance = await getBalance(ctx.from.id);
@@ -1240,9 +1396,26 @@ export async function handleLeague(ctx: Context): Promise<void> {
       return;
     }
 
+    if (!Number.isInteger(durationHours)) {
+      const balance = await getBalance(ctx.from.id);
+      await ctx.reply(
+        buildCreateArenaDurationText({
+          balance,
+          entryFee,
+        }),
+        {
+          reply_markup: buildCreateArenaDurationKeyboard(entryFee),
+        }
+      );
+      return;
+    }
+
     try {
-      const game = await createFantasyLeagueGame(ctx.from.id, entryFee);
-      const me = await ctx.api.getMe();
+      const game = await createFantasyLeagueGame(ctx.from.id, entryFee, durationHours);
+      const shareUrl = await getArenaInviteShareUrl(ctx, {
+        code: game.code,
+        entryFee: game.entry_fee,
+      });
 
       await ctx.reply(
         buildFantasyCreateSuccessText({
@@ -1250,32 +1423,14 @@ export async function handleLeague(ctx: Context): Promise<void> {
           prizePool: game.prize_pool,
           virtualStack: game.virtual_start_balance,
           roundsUntilStart: getApproxRoundsUntil(game.start_at),
+          durationHours: getGameDurationHours(game),
         }),
         {
-          reply_markup: buildFantasyCreateSuccessKeyboard(
-            buildShareInviteUrl({
-              botUsername: me.username,
-              code: game.code,
-              entryFee: game.entry_fee,
-            })
-          ),
+          reply_markup: buildFantasyCreateSuccessKeyboard(shareUrl),
         }
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message.toLowerCase() : "";
-
-      if (
-        message.includes("insufficient play balance") ||
-        message.includes("insufficient balance")
-      ) {
-        const balance = await getBalance(ctx.from.id);
-        await ctx.reply(buildArenaInsufficientBalanceText(entryFee, balance), {
-          reply_markup: buildInsufficientBalanceKeyboard(),
-        });
-        return;
-      }
-
-      await ctx.reply("Something went wrong. Please try again.");
+      await replyFantasyCreateError(ctx, error, entryFee);
     }
 
     return;
@@ -1476,7 +1631,10 @@ export async function handleFantasyJoinConfirm(ctx: Context): Promise<void> {
     await clearPendingFantasyLeagueJoin(ctx.from.id);
     const balance = await getBalance(ctx.from.id);
     const leaderboard = await getFantasyLeagueDetailsByCode(game.code);
-    const me = await ctx.api.getMe();
+    const shareUrl = await getArenaInviteShareUrl(ctx, {
+      code: game.code,
+      entryFee: game.entry_fee,
+    });
 
     await editTradePromptMessage(
       ctx,
@@ -1487,14 +1645,9 @@ export async function handleFantasyJoinConfirm(ctx: Context): Promise<void> {
         prizePool: leaderboard.game.prize_pool,
         playerCount: leaderboard.memberCount,
         roundsUntilStart: getApproxRoundsUntil(game.start_at),
+        durationHours: getGameDurationHours(game),
       }),
-      buildFantasyJoinSuccessKeyboard(
-        buildShareInviteUrl({
-          botUsername: me.username,
-          code: game.code,
-          entryFee: game.entry_fee,
-        })
-      )
+      buildFantasyJoinSuccessKeyboard(shareUrl)
     );
   } catch (error) {
     await replyFantasyJoinError(ctx, error, code);

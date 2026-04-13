@@ -175,6 +175,29 @@ export async function getCurrentRound(
   };
 }
 
+export async function getNextRoundStart(
+  asset: BayseAsset = "BTC"
+): Promise<string | null> {
+  const now = Date.now();
+  const events = await listSeriesEvents(asset);
+  const byOpeningDate = [...events].sort(
+    (left, right) => Date.parse(left.openingDate) - Date.parse(right.openingDate)
+  );
+
+  const current = byOpeningDate.find((event) => {
+    const openingTime = Date.parse(event.openingDate);
+    const closingTime = Date.parse(event.closingDate);
+    return openingTime <= now && now < closingTime;
+  });
+
+  if (current) {
+    return current.closingDate;
+  }
+
+  const next = byOpeningDate.find((event) => Date.parse(event.openingDate) > now);
+  return next?.openingDate ?? null;
+}
+
 export async function getRoundPricing(slug: string): Promise<RoundPricing | null> {
   const eventMatch = await findEventBySlug(slug);
 

@@ -3,6 +3,9 @@ import { createHash } from "crypto";
 import type { FantasyGame, FantasyLeaderboardEntry } from "./db/fantasy.ts";
 
 export const ARENA_ENTRY_FEE_OPTIONS = [1, 2, 5, 10] as const;
+export const ARENA_DURATION_HOURS_OPTIONS = [3, 9, 12, 24] as const;
+export const BAYSE_ROUNDS_PER_HOUR = 4;
+const HOUR_MS = 60 * 60 * 1000;
 
 export interface PrizeAwardPreview {
   amount: number;
@@ -122,6 +125,23 @@ export function getApproxRoundsUntil(startAt: string): number {
 export function getApproxRoundsLeft(endAt: string): number {
   const ms = Math.max(0, Date.parse(endAt) - Date.now());
   return Math.max(0, Math.ceil(ms / (15 * 60 * 1000)));
+}
+
+export function getDurationHoursFromDates(startAt: string, endAt: string): number {
+  const durationMs = Math.max(0, Date.parse(endAt) - Date.parse(startAt));
+  return Math.max(1, Math.round(durationMs / HOUR_MS));
+}
+
+export function getGameDurationHours(game: Pick<FantasyGame, "start_at" | "end_at">): number {
+  return getDurationHoursFromDates(game.start_at, game.end_at);
+}
+
+export function formatDurationHours(hours: number): string {
+  return `${hours}h`;
+}
+
+export function getRoundsForDurationHours(hours: number): number {
+  return Math.max(1, Math.round(hours * BAYSE_ROUNDS_PER_HOUR));
 }
 
 export function getGameRoundNumber(game: FantasyGame, roundOpeningDate: string): number {
