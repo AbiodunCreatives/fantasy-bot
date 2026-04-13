@@ -4,6 +4,7 @@ import {
   getEventPricing,
   getEvent,
   getNextRoundStart,
+  getTradeQuote,
   type Round,
   type RoundPricing,
 } from "./bayse-market.ts";
@@ -97,6 +98,25 @@ interface FantasyTradeRefPayload {
   referencePrice: number | null;
   upPrice: number;
   downPrice: number;
+  upOutcomeId: string | null;
+  downOutcomeId: string | null;
+}
+
+function isOptionalString(value: unknown): value is string | null | undefined {
+  return value === null || value === undefined || typeof value === "string";
+}
+
+function getOutcomeIdForDirection(
+  direction: FantasyTradeDirection,
+  payload: Pick<FantasyTradeRefPayload, "upOutcomeId" | "downOutcomeId">,
+  pricing?: Pick<RoundPricing, "upOutcomeId" | "downOutcomeId">
+): string | null {
+  const direct =
+    direction === "UP"
+      ? payload.upOutcomeId ?? pricing?.upOutcomeId
+      : payload.downOutcomeId ?? pricing?.downOutcomeId;
+
+  return typeof direct === "string" && direct.trim() ? direct : null;
 }
 
 export interface FantasyGameSnapshot {
@@ -421,7 +441,9 @@ async function loadFantasyTradeReference(
       !parsed.openingDate ||
       !parsed.closingDate ||
       !Number.isFinite(parsed.upPrice) ||
-      !Number.isFinite(parsed.downPrice)
+      !Number.isFinite(parsed.downPrice) ||
+      !isOptionalString(parsed.upOutcomeId) ||
+      !isOptionalString(parsed.downOutcomeId)
     ) {
       return null;
     }
@@ -632,6 +654,8 @@ async function buildTradeReference(input: {
   referencePrice: number | null;
   upPrice: number;
   downPrice: number;
+  upOutcomeId: string | null;
+  downOutcomeId: string | null;
 }): Promise<string> {
   return saveFantasyTradeReference({
     gameId: input.gameId,
@@ -642,6 +666,8 @@ async function buildTradeReference(input: {
     referencePrice: input.referencePrice,
     upPrice: input.upPrice,
     downPrice: input.downPrice,
+    upOutcomeId: input.upOutcomeId,
+    downOutcomeId: input.downOutcomeId,
   });
 }
 
@@ -1496,6 +1522,8 @@ export async function processFantasyLeagueRound(
       referencePrice: pricing.eventThreshold,
       upPrice: pricing.upPrice,
       downPrice: pricing.downPrice,
+      upOutcomeId: pricing.upOutcomeId,
+      downOutcomeId: pricing.downOutcomeId,
     });
 
     await Promise.all(
@@ -1619,12 +1647,33 @@ export async function placeFantasyTradeFromCallbackData(input: {
     throw new Error("This fantasy round is no longer available.");
   }
 
+  const outcomeId = getOutcomeIdForDirection(direction, payload, pricing);
+
+  if (!outcomeId) {
+    throw new Error("Pricing is unavailable for this fantasy round.");
+  }
+
   if (Date.parse(payload.closingDate) <= Date.now()) {
     throw new Error("This round has ended. Wait for the next BTC signal to trade.");
   }
 
-  const entryPrice =
-    direction === "UP" ? pricing.upPrice : pricing.downPrice;
+  const quote = await getTradeQuote({
+    eventId: payload.eventId,
+    marketId: payload.marketId,
+    outcomeId,
+    amount: stake,
+    currency: "USD",
+  });
+
+  if (!quote) {
+    throw new Error("This fantasy round is no longer available.");
+  }
+
+  if (quote.tradeGoesOverMaxLiability) {
+    throw new Error("That stake is too large for this fantasy round right now.");
+  }
+
+  const entryPrice = quote.price;
 
   if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
     throw new Error("Pricing is unavailable for this fantasy round.");
@@ -1639,7 +1688,11 @@ export async function placeFantasyTradeFromCallbackData(input: {
   }
 
   try {
-    const shares = stake / entryPrice;
+    const shares = quote.quantity;
+
+    if (!Number.isFinite(shares) || shares <= 0) {
+      throw new Error("Pricing is unavailable for this fantasy round.");
+    }
 
     await recordFantasyTrade({
       gameId: game.id,
