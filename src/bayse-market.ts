@@ -71,6 +71,11 @@ export interface Round {
 
 export type CurrentRound = Round;
 
+export interface CurrentRoundSnapshot {
+  round: Round;
+  pricing: RoundPricing | null;
+}
+
 export interface RoundPricing {
   upPrice: number;
   downPrice: number;
@@ -110,6 +115,33 @@ function normalizeRoundPricing(
     marketId: market.id,
     url: `https://bayse.markets/event/${event.id}`,
   };
+}
+
+function normalizeRound(event: BayseEventRaw, now: number): Round {
+  const openingTime = Date.parse(event.openingDate);
+  const closingTime = Date.parse(event.closingDate);
+  const windowMs = closingTime - openingTime;
+  const elapsedMs = now - openingTime;
+  const pctElapsed = windowMs > 0 ? clamp(elapsedMs / windowMs, 0, 1) : 1;
+
+  return {
+    eventId: event.id,
+    slug: event.slug,
+    openingDate: event.openingDate,
+    closingDate: event.closingDate,
+    eventThreshold: event.eventThreshold ?? null,
+    pctElapsed,
+  };
+}
+
+function getEmbeddedRoundPricing(event: BayseEventRaw): RoundPricing | null {
+  const market = event.markets?.[0];
+
+  if (!market) {
+    return null;
+  }
+
+  return normalizeRoundPricing(event, market);
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -232,6 +264,13 @@ function clamp(value: number, min: number, max: number): number {
 export async function getCurrentRound(
   asset: BayseAsset = "BTC"
 ): Promise<Round | null> {
+  const snapshot = await getCurrentRoundSnapshot(asset);
+  return snapshot?.round ?? null;
+}
+
+export async function getCurrentRoundSnapshot(
+  asset: BayseAsset = "BTC"
+): Promise<CurrentRoundSnapshot | null> {
   const now = Date.now();
   const current =
     findCurrentLikeOpenEvent(
@@ -243,19 +282,9 @@ export async function getCurrentRound(
     return null;
   }
 
-  const openingTime = Date.parse(current.openingDate);
-  const closingTime = Date.parse(current.closingDate);
-  const windowMs = closingTime - openingTime;
-  const elapsedMs = now - openingTime;
-  const pctElapsed = windowMs > 0 ? clamp(elapsedMs / windowMs, 0, 1) : 1;
-
   return {
-    eventId: current.id,
-    slug: current.slug,
-    openingDate: current.openingDate,
-    closingDate: current.closingDate,
-    eventThreshold: current.eventThreshold ?? null,
-    pctElapsed,
+    round: normalizeRound(current, now),
+    pricing: getEmbeddedRoundPricing(current) ?? (await getEventPricing(current.id)),
   };
 }
 
@@ -291,23 +320,17 @@ export async function getNextRoundStart(
 export async function getRoundPricing(slug: string): Promise<RoundPricing | null> {
   const eventMatch = await getEventBySlug(slug);
 
-  if (!eventMatch) {
-    const fallback = await findEventBySlug(slug);
-
-    if (!fallback) {
-      return null;
-    }
-
-    return getEventPricing(fallback.id);
+  if (eventMatch) {
+    return getEmbeddedRoundPricing(eventMatch) ?? getEventPricing(eventMatch.id);
   }
 
-  const market = eventMatch.markets?.[0];
+  const fallback = await findEventBySlug(slug);
 
-  if (!market) {
+  if (!fallback) {
     return null;
   }
 
-  return normalizeRoundPricing(eventMatch, market);
+  return getEmbeddedRoundPricing(fallback) ?? getEventPricing(fallback.id);
 }
 
 export async function getEventPricing(

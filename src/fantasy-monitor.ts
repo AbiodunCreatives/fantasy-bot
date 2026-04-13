@@ -1,4 +1,4 @@
-import { getCurrentRound, getRoundPricing } from "./bayse-market.ts";
+import { getCurrentRoundSnapshot } from "./bayse-market.ts";
 import { config } from "./config.ts";
 import { FANTASY_ASSET, processFantasyLeagueRound } from "./fantasy-league.ts";
 
@@ -13,19 +13,20 @@ async function runFantasyMonitorTick(): Promise<void> {
   monitorInFlight = true;
 
   try {
-    const round = await getCurrentRound(FANTASY_ASSET);
+    const snapshot = await getCurrentRoundSnapshot(FANTASY_ASSET);
 
-    if (!round) {
+    if (!snapshot) {
       return;
     }
 
-    const pricing = await getRoundPricing(round.slug);
-
-    if (!pricing) {
+    if (!snapshot.pricing) {
+      console.warn(
+        `[fantasy-monitor] Missing round pricing for ${snapshot.round.slug} (${snapshot.round.eventId}).`
+      );
       return;
     }
 
-    await processFantasyLeagueRound(round, pricing);
+    await processFantasyLeagueRound(snapshot.round, snapshot.pricing);
   } catch (error) {
     console.error("[fantasy-monitor] Tick failed:", error);
   } finally {

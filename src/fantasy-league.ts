@@ -1526,14 +1526,14 @@ export async function processFantasyLeagueRound(
       downOutcomeId: pricing.downOutcomeId,
     });
 
-    await Promise.all(
+    const deliveryResults = await Promise.all(
       members.map(async (member) => {
         const rank =
           leaderboard.find((entry) => entry.telegram_id === member.telegram_id)?.place ??
           null;
 
         if (rank === null) {
-          return;
+          return false;
         }
 
         const prompt = buildRoundBroadcastPayload({
@@ -1564,9 +1564,19 @@ export async function processFantasyLeagueRound(
             messageId: sent.message_id,
             telegramId: member.telegram_id,
           });
+          return true;
         }
+
+        return false;
       })
     );
+
+    if (!deliveryResults.some(Boolean)) {
+      console.warn(
+        `[fantasy] No round prompts delivered for arena ${game.code} on ${pricing.eventId}.`
+      );
+      continue;
+    }
 
     await updateFantasyGame({
       gameId: game.id,
