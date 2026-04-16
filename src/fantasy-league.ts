@@ -506,7 +506,84 @@ function clearPromptState(key: string): void {
   activePromptStates.delete(key);
 }
 
+function formatRoundPromptBtcTarget(value: number | null): string {
+  if (!Number.isFinite(value)) {
+    return "N/A";
+  }
+
+  return `$${(value ?? 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatRoundPromptChance(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  return String(Math.round(value * 100));
+}
+
+function formatRoundPromptPrice(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  return String(Math.round(value * 100));
+}
+
+function formatRoundPromptMultiplier(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0.0";
+  }
+
+  return (1 / value).toFixed(1);
+}
+
+function formatRoundPromptBalanceDelta(game: FantasyGame, virtualBalance: number): string {
+  const returnPct = getVirtualReturnPct(game, virtualBalance);
+  const rounded = Math.round((returnPct + Number.EPSILON) * 10) / 10;
+  const prefix = rounded >= 0 ? "+" : "";
+  return `${prefix}${rounded.toFixed(1)}`;
+}
+
+function getProjectedPrizeForRank(rank: number, memberCount: number, prizePool: number): number {
+  const split = getPrizeSplits(memberCount)[rank - 1] ?? 0;
+  return roundMoney(prizePool * split);
+}
+
 function buildRoundPromptText(state: PromptState): string {
+  const yesChance = formatRoundPromptChance(state.upPrice).padStart(3, " ");
+  const noChance = formatRoundPromptChance(state.downPrice).padStart(3, " ");
+  const yesPrice = formatRoundPromptPrice(state.upPrice).padStart(3, " ");
+  const noPrice = formatRoundPromptPrice(state.downPrice).padStart(3, " ");
+  const arenaTimeLeft = formatCompactDuration(
+    Math.max(0, Date.parse(state.game.end_at) - Date.now())
+  );
+
+  return [
+    "━━━━━━━━━━━━━━━━━━",
+    `⚡ ROUND ${state.roundNumber}  •  LIVE`,
+    "━━━━━━━━━━━━━━━━━━",
+    `📍 BTC target: ${formatRoundPromptBtcTarget(state.referencePrice)}`,
+    "",
+    `⬆ YES   ${yesChance}%   ${yesPrice}¢   wins ${formatRoundPromptMultiplier(state.upPrice)}×`,
+    `⬇ NO    ${noChance}%   ${noPrice}¢   wins ${formatRoundPromptMultiplier(
+      state.downPrice
+    )}×`,
+    "",
+    "━━━━━━━━━━━━━━━━━━",
+    `🏆 Rank #${state.rank}  •  Stack ${formatWholeMoney(state.virtualBalance)} (${formatRoundPromptBalanceDelta(
+      state.game,
+      state.virtualBalance
+    )}%)`,
+    `💰 Prize now: ${formatMoney(
+      getProjectedPrizeForRank(state.rank, state.memberCount, state.game.prize_pool)
+    )}`,
+    `⏱ Round: ${formatRoundCountdown(state.closingDate)}  •  Arena: ${arenaTimeLeft}`,
+  ].join("\n");
+
   return [
     `⚡ ROUND ${state.roundNumber}  •  Arena ${state.game.code}`,
     "",
@@ -521,7 +598,7 @@ function buildRoundPromptText(state: PromptState): string {
     `Your rank: #${state.rank} of ${state.memberCount}`,
     "",
     state.stage === "direction" && state.selectedStake
-      ? `Stake ${formatWholeMoney(state.selectedStake)} - which direction?`
+      ? `Stake ${formatWholeMoney(state.selectedStake ?? 0)} - which direction?`
       : "Pick a stake:",
     "",
     `⏱ ${formatRoundCountdown(state.closingDate)} remaining`,
