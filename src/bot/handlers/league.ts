@@ -5,7 +5,7 @@ import { getCurrentRoundSnapshot } from "../../bayse-market.ts";
 import { getBalance } from "../../db/balances.ts";
 import {
   addFantasyPlayBalance,
-  buildFantasyTradeDirectionSelection,
+  buildFantasyTradeStakeSelection,
   clearFantasyTradePromptState,
   clearPendingFantasyLeagueJoin,
   clearPendingFantasyCustomFundAmount,
@@ -841,13 +841,17 @@ function buildTradeAlreadyLockedText(): string {
   ].join("\n");
 }
 
+function formatTradeDirectionLabel(direction: "UP" | "DOWN"): string {
+  return direction === "UP" ? "Buy YES" : "Buy NO";
+}
+
 function buildTradeLockedText(result: FantasyTradePlacementResult): string {
   return [
     `Round ${result.roundNumber} locked in - ${result.game.code}`,
     "",
-    `Direction: ${result.direction}`,
+    `Direction: ${formatTradeDirectionLabel(result.direction)}`,
     `Stake: ${formatMoney(result.stake)}`,
-    `Entry price: ${Math.round(result.entryPrice * 100)}c`,
+    `Buy price: ${Math.round(result.entryPrice * 100)}c`,
     `Shares: ${result.shares.toFixed(2)}`,
     `Virtual balance: ${formatMoney(result.remainingBalance)}`,
     "",
@@ -1793,9 +1797,9 @@ export async function handleFantasyLeagueTrade(ctx: Context): Promise<void> {
   const callbackData = ctx.callbackQuery.data;
   const { chatId, messageId } = getPromptMessageRef(ctx);
 
-  if (callbackData.startsWith("flt:s:")) {
+  if (callbackData.startsWith("flt:b:")) {
     try {
-      const directionSelection = await buildFantasyTradeDirectionSelection({
+      const directionSelection = await buildFantasyTradeStakeSelection({
         telegramId: ctx.from.id,
         callbackData,
         chatId,

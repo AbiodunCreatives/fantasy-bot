@@ -94,6 +94,7 @@ interface FantasyTradeRefPayload {
   marketId: string;
   openingDate: string;
   closingDate: string;
+  currentPrice: number | null;
   referencePrice: number | null;
   upPrice: number;
   downPrice: number;
@@ -103,6 +104,19 @@ interface FantasyTradeRefPayload {
 
 function isOptionalString(value: unknown): value is string | null | undefined {
   return value === null || value === undefined || typeof value === "string";
+}
+
+function parseOptionalNumber(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
 }
 
 function getOutcomeIdForDirection(
@@ -174,9 +188,11 @@ export interface FantasyLeagueStatusView {
 
 export interface FantasyTradeStakeSelectionView {
   game: FantasyGame;
-  stake: number;
+  direction: FantasyTradeDirection;
+  directionPrice: number;
   roundNumber: number;
   closesAt: string;
+  currentPrice: number | null;
   referencePrice: number | null;
   upPrice: number;
   downPrice: number;
@@ -192,11 +208,13 @@ interface PromptState {
   virtualBalance: number;
   roundNumber: number;
   closingDate: string;
+  currentPrice: number | null;
   referencePrice: number | null;
   upPrice: number;
   downPrice: number;
   ref: string;
-  stage: "stake" | "direction";
+  stage: "direction" | "stake";
+  selectedDirection: FantasyTradeDirection | null;
   selectedStake: number | null;
 }
 
@@ -431,7 +449,9 @@ async function loadFantasyTradeReference(
   }
 
   try {
-    const parsed = JSON.parse(cached) as FantasyTradeRefPayload;
+    const parsed = JSON.parse(cached) as FantasyTradeRefPayload & {
+      currentPrice?: unknown;
+    };
 
     if (
       !parsed.gameId ||
@@ -447,17 +467,23 @@ async function loadFantasyTradeReference(
       return null;
     }
 
-    return parsed;
+    return {
+      ...parsed,
+      currentPrice: parseOptionalNumber(parsed.currentPrice),
+    };
   } catch {
     return null;
   }
 }
 
-function buildFantasyTradeStakeButtonData(amount: number, ref: string): string {
-  return `flt:s:${amount}:r:${ref}`;
+function buildFantasyTradeDirectionButtonData(
+  direction: FantasyTradeDirection,
+  ref: string
+): string {
+  return `flt:b:${direction}:r:${ref}`;
 }
 
-function buildFantasyTradeDirectionButtonData(
+function buildFantasyTradeStakeButtonData(
   amount: number,
   direction: FantasyTradeDirection,
   ref: string
@@ -465,18 +491,8 @@ function buildFantasyTradeDirectionButtonData(
   return `flt:d:${amount}:${direction}:r:${ref}`;
 }
 
-function buildFantasyTradeKeyboard(ref: string): InlineKeyboard {
-  const keyboard = new InlineKeyboard();
-
-  for (const amount of FANTASY_TRADE_AMOUNTS) {
-    keyboard.text(`$${amount}`, buildFantasyTradeStakeButtonData(amount, ref));
-  }
-
-  return keyboard;
-}
-
 function buildFantasyTradeDirectionKeyboard(input: {
-  amount: number;
+  amount?: number;
   ref: string;
   upPrice: number;
   downPrice: number;
@@ -484,12 +500,48 @@ function buildFantasyTradeDirectionKeyboard(input: {
   return new InlineKeyboard()
     .text(
       `⬆ UP (${formatProbabilityPrice(input.upPrice)})`,
-      buildFantasyTradeDirectionButtonData(input.amount, "UP", input.ref)
+      buildFantasyTradeDirectionButtonData("UP", input.ref)
     )
     .text(
       `⬇ DOWN (${formatProbabilityPrice(input.downPrice)})`,
-      buildFantasyTradeDirectionButtonData(input.amount, "DOWN", input.ref)
+      buildFantasyTradeDirectionButtonData("DOWN", input.ref)
     );
+}
+
+function buildFantasyTradeBuyKeyboard(input: {
+  ref: string;
+  upPrice: number;
+  downPrice: number;
+}): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(
+      `Buy YES (${formatRoundPromptPrice(input.upPrice)}c)`,
+      buildFantasyTradeDirectionButtonData("UP", input.ref)
+    )
+    .text(
+      `Buy NO (${formatRoundPromptPrice(input.downPrice)}c)`,
+      buildFantasyTradeDirectionButtonData("DOWN", input.ref)
+    );
+}
+
+function buildFantasyTradeStakeKeyboard(input: {
+  direction: FantasyTradeDirection;
+  ref: string;
+}): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  FANTASY_TRADE_AMOUNTS.forEach((amount, index) => {
+    keyboard.text(
+      `${amount} USDC`,
+      buildFantasyTradeStakeButtonData(amount, input.direction, input.ref)
+    );
+
+    if (index % 2 === 1 && index < FANTASY_TRADE_AMOUNTS.length - 1) {
+      keyboard.row();
+    }
+  });
+
+  return keyboard;
 }
 
 function clearPromptTimer(key: string): void {
@@ -606,24 +658,132 @@ function buildRoundPromptText(state: PromptState): string {
 }
 
 function buildRoundPromptKeyboard(state: PromptState): InlineKeyboard {
-  return state.stage === "direction" && state.selectedStake
-    ? buildFantasyTradeDirectionKeyboard({
-        amount: state.selectedStake,
+  return state.stage === "stake" && state.selectedDirection !== null
+    ? buildFantasyTradeStakeKeyboard({
+        direction: state.selectedDirection,
+        ref: state.ref,
+      })
+    : buildFantasyTradeBuyKeyboard({
         ref: state.ref,
         upPrice: state.upPrice,
         downPrice: state.downPrice,
-      })
-    : buildFantasyTradeKeyboard(state.ref);
+      });
 }
 
 function buildClosedPromptText(state: PromptState): string {
   return [
     `Round ${state.roundNumber} is closed in Arena ${state.game.code}.`,
     "",
-    state.selectedStake
-      ? `Your ${formatWholeMoney(state.selectedStake)} ticket did not lock before the bell.`
+    state.stage === "stake" && state.selectedDirection !== null
+      ? `Your ${formatFantasyTradeDirection(state.selectedDirection)} order did not lock before the bell.`
       : "No trade was locked for this round.",
     "No problem. I will send the next BTC prompt shortly.",
+  ].join("\n");
+}
+
+function formatLiveRoundPromptBtcPrice(value: number | null): string {
+  if (!Number.isFinite(value)) {
+    return "N/A";
+  }
+
+  return `$${(value ?? 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatLiveRoundPromptSignedMoney(value: number): string {
+  const rounded = roundMoney(value);
+  const prefix = rounded >= 0 ? "+" : "-";
+
+  return `${prefix}$${Math.abs(rounded).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function getFantasyDirectionPrice(
+  direction: FantasyTradeDirection,
+  upPrice: number,
+  downPrice: number
+): number {
+  return direction === "UP" ? upPrice : downPrice;
+}
+
+function getFantasyProjectedPayout(price: number, amount: number): number {
+  if (!Number.isFinite(price) || price <= 0) {
+    return 0;
+  }
+
+  return roundMoney(amount / price);
+}
+
+function getFantasyProjectedProfit(price: number, amount: number): number {
+  return roundMoney(getFantasyProjectedPayout(price, amount) - amount);
+}
+
+function formatFantasyTradeDirection(direction: FantasyTradeDirection): string {
+  return direction === "UP" ? "Buy YES" : "Buy NO";
+}
+
+function buildLiveRoundQuestion(referencePrice: number | null): string {
+  if (!Number.isFinite(referencePrice)) {
+    return "Will Bitcoin finish above the Bayse target when this round closes?";
+  }
+
+  return `Will Bitcoin be above ${formatLiveRoundPromptBtcPrice(
+    referencePrice
+  )} when this round closes?`;
+}
+
+function buildLiveRoundPromptText(state: PromptState): string {
+  const yesChance = formatRoundPromptChance(state.upPrice).padStart(3, " ");
+  const noChance = formatRoundPromptChance(state.downPrice).padStart(3, " ");
+  const yesPrice = formatRoundPromptPrice(state.upPrice).padStart(3, " ");
+  const noPrice = formatRoundPromptPrice(state.downPrice).padStart(3, " ");
+  const arenaTimeLeft = formatCompactDuration(
+    Math.max(0, Date.parse(state.game.end_at) - Date.now())
+  );
+  const selectedPrice =
+    state.selectedDirection === null
+      ? null
+      : getFantasyDirectionPrice(state.selectedDirection, state.upPrice, state.downPrice);
+  const stageLines =
+    state.stage === "stake" && state.selectedDirection !== null && selectedPrice !== null
+      ? [
+          `${formatFantasyTradeDirection(state.selectedDirection)} selected at ${formatRoundPromptPrice(
+            selectedPrice
+          )}c.`,
+          `If you're right: win ${formatLiveRoundPromptSignedMoney(
+            getFantasyProjectedProfit(selectedPrice, 100)
+          )} on $100.`,
+          "How many USDC do you want to play?",
+        ]
+      : ["Tap Buy YES or Buy NO first, then choose how many USDC to play."];
+
+  return [
+    "------------------",
+    `ROUND ${state.roundNumber}  |  LIVE`,
+    "------------------",
+    buildLiveRoundQuestion(state.referencePrice),
+    "",
+    `Current price: ${formatLiveRoundPromptBtcPrice(state.currentPrice)}`,
+    `Target price: ${formatLiveRoundPromptBtcPrice(state.referencePrice)}`,
+    "",
+    `Buy YES   ${yesChance}%   ${yesPrice}c   wins ${formatLiveRoundPromptSignedMoney(
+      getFantasyProjectedProfit(state.upPrice, 100)
+    )} on $100`,
+    `Buy NO    ${noChance}%   ${noPrice}c   wins ${formatLiveRoundPromptSignedMoney(
+      getFantasyProjectedProfit(state.downPrice, 100)
+    )} on $100`,
+    "",
+    `Rank #${state.rank}  |  Stack ${formatWholeMoney(state.virtualBalance)} (${formatRoundPromptBalanceDelta(
+      state.game,
+      state.virtualBalance
+    )}%)`,
+    `Round: ${formatRoundCountdown(state.closingDate)}  |  Arena: ${arenaTimeLeft}`,
+    "",
+    ...stageLines,
   ].join("\n");
 }
 
@@ -661,7 +821,7 @@ async function refreshPromptMessage(key: string): Promise<void> {
     await tgApi.editMessageText(
       state.chatId,
       state.messageId,
-      buildRoundPromptText(state),
+      buildLiveRoundPromptText(state),
       { reply_markup: buildRoundPromptKeyboard(state) }
     );
   } catch (error) {
@@ -727,6 +887,7 @@ async function buildTradeReference(input: {
   marketId: string;
   openingDate: string;
   closingDate: string;
+  currentPrice: number | null;
   referencePrice: number | null;
   upPrice: number;
   downPrice: number;
@@ -739,12 +900,39 @@ async function buildTradeReference(input: {
     marketId: input.marketId,
     openingDate: input.openingDate,
     closingDate: input.closingDate,
+    currentPrice: input.currentPrice,
     referencePrice: input.referencePrice,
     upPrice: input.upPrice,
     downPrice: input.downPrice,
     upOutcomeId: input.upOutcomeId,
     downOutcomeId: input.downOutcomeId,
   });
+}
+
+async function getRoundCurrentPrice(pricing: RoundPricing): Promise<number | null> {
+  const outcomeId = pricing.upOutcomeId ?? pricing.downOutcomeId;
+
+  if (!outcomeId) {
+    return null;
+  }
+
+  try {
+    const quote = await getTradeQuote({
+      eventId: pricing.eventId,
+      marketId: pricing.marketId,
+      outcomeId,
+      amount: FANTASY_TRADE_AMOUNTS[0],
+      currency: "USD",
+    });
+
+    return parseOptionalNumber(quote?.currentMarketPrice);
+  } catch (error) {
+    console.warn(
+      `[fantasy] Failed to load current BTC price for ${pricing.eventId}:`,
+      error
+    );
+    return null;
+  }
 }
 
 function inferResolvedDirection(payload: unknown): FantasyTradeDirection | null {
@@ -979,6 +1167,7 @@ function buildRoundBroadcastPayload(input: {
   game: FantasyGame;
   round: Round;
   pricing: RoundPricing;
+  currentPrice: number | null;
   rank: number;
   memberCount: number;
   virtualBalance: number;
@@ -994,17 +1183,19 @@ function buildRoundBroadcastPayload(input: {
     virtualBalance: input.virtualBalance,
     roundNumber: getGameRoundNumber(input.game, input.round.openingDate),
     closingDate: input.round.closingDate,
+    currentPrice: input.currentPrice,
     referencePrice: input.pricing.eventThreshold,
     upPrice: input.pricing.upPrice,
     downPrice: input.pricing.downPrice,
     ref: input.ref,
-    stage: "stake",
+    stage: "direction",
+    selectedDirection: null,
     selectedStake: null,
   };
 
   return {
-    text: buildRoundPromptText(state),
-    keyboard: buildFantasyTradeKeyboard(input.ref),
+    text: buildLiveRoundPromptText(state),
+    keyboard: buildRoundPromptKeyboard(state),
     state,
   };
 }
@@ -1212,14 +1403,14 @@ export async function getFantasyTradeStakeSelectionView(input: {
 }): Promise<FantasyTradeStakeSelectionView> {
   const parts = input.callbackData.split(":");
 
-  if (parts.length < 5 || parts[0] !== "flt" || parts[1] !== "s" || parts[3] !== "r") {
+  if (parts.length < 5 || parts[0] !== "flt" || parts[1] !== "b" || parts[3] !== "r") {
     throw new Error("This round has ended. Wait for the next BTC signal to trade.");
   }
 
-  const stake = roundMoney(Number.parseFloat(parts[2] ?? ""));
+  const direction = parts[2];
   const ref = parts.slice(4).join(":");
 
-  if (!Number.isFinite(stake) || stake <= 0 || !ref) {
+  if (!ref || (direction !== "UP" && direction !== "DOWN")) {
     throw new Error("This round has ended. Wait for the next BTC signal to trade.");
   }
 
@@ -1251,16 +1442,19 @@ export async function getFantasyTradeStakeSelectionView(input: {
 
   return {
     game,
-    stake,
+    direction,
+    directionPrice:
+      direction === "UP" ? payload.upPrice : payload.downPrice,
     roundNumber: getGameRoundNumber(game, payload.openingDate),
     closesAt: payload.closingDate,
+    currentPrice: payload.currentPrice,
     referencePrice: payload.referencePrice,
     upPrice: payload.upPrice,
     downPrice: payload.downPrice,
   };
 }
 
-export async function buildFantasyTradeDirectionSelection(input: {
+export async function buildFantasyTradeStakeSelection(input: {
   telegramId: number;
   callbackData: string;
   chatId?: number;
@@ -1271,25 +1465,29 @@ export async function buildFantasyTradeDirectionSelection(input: {
     callbackData: input.callbackData,
   });
   const parts = input.callbackData.split(":");
-  const stake = roundMoney(Number.parseFloat(parts[2] ?? ""));
+  const direction = parts[2] as FantasyTradeDirection;
   const ref = parts.slice(4).join(":");
   const promptState = getPromptStateFromMessage(input.chatId, input.messageId);
 
   if (promptState) {
-    promptState.state.stage = "direction";
-    promptState.state.selectedStake = stake;
+    promptState.state.stage = "stake";
+    promptState.state.currentPrice = selection.currentPrice;
+    promptState.state.referencePrice = selection.referencePrice;
+    promptState.state.selectedDirection = direction;
+    promptState.state.selectedStake = null;
     promptState.state.telegramId = input.telegramId;
 
     return {
-      text: buildRoundPromptText(promptState.state),
+      text: buildLiveRoundPromptText(promptState.state),
       keyboard: buildRoundPromptKeyboard(promptState.state),
     };
   }
 
   const lines = [
-    `Stake ${formatWholeMoney(selection.stake)} - which direction?`,
+    buildLiveRoundQuestion(selection.referencePrice),
     "",
-    `BTC/USD: ${formatBtcPrice(selection.referencePrice)}`,
+    `Current price: ${formatLiveRoundPromptBtcPrice(selection.currentPrice)}`,
+    `Target price: ${formatLiveRoundPromptBtcPrice(selection.referencePrice)}`,
     `↑ UP  ${formatProbabilityPrice(selection.upPrice)}   •   ↓ DOWN  ${formatProbabilityPrice(
       selection.downPrice
     )}`,
@@ -1299,11 +1497,9 @@ export async function buildFantasyTradeDirectionSelection(input: {
 
   return {
     text: lines.join("\n"),
-    keyboard: buildFantasyTradeDirectionKeyboard({
-      amount: selection.stake,
+    keyboard: buildFantasyTradeStakeKeyboard({
+      direction,
       ref,
-      upPrice: selection.upPrice,
-      downPrice: selection.downPrice,
     }),
   };
 }
@@ -1589,12 +1785,14 @@ export async function processFantasyLeagueRound(
 
     const members = await listFantasyGameMembers(game.id);
     const leaderboard = await getFantasyLeaderboard(game.id);
+    const currentPrice = await getRoundCurrentPrice(pricing);
     const roundRef = await buildTradeReference({
       gameId: game.id,
       eventId: pricing.eventId,
       marketId: pricing.marketId,
       openingDate: round.openingDate,
       closingDate: round.closingDate,
+      currentPrice,
       referencePrice: pricing.eventThreshold,
       upPrice: pricing.upPrice,
       downPrice: pricing.downPrice,
@@ -1616,6 +1814,7 @@ export async function processFantasyLeagueRound(
           game,
           round,
           pricing,
+          currentPrice,
           rank,
           memberCount: leaderboard.length,
           virtualBalance: member.virtual_balance,
