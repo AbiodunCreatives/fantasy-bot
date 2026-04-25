@@ -100,3 +100,293 @@ CREATE INDEX IF NOT EXISTS idx_fantasy_trades_game_id_created_at
 
 CREATE INDEX IF NOT EXISTS idx_fantasy_trades_event_id_outcome
   ON fantasy_trades (event_id, outcome);
+
+CREATE OR REPLACE FUNCTION create_fantasy_game_with_entry(
+  p_code TEXT,
+  p_creator_telegram_id BIGINT,
+  p_entry_fee NUMERIC,
+  p_virtual_start_balance NUMERIC,
+  p_start_at TIMESTAMPTZ,
+  p_end_at TIMESTAMPTZ,
+  p_commission_rate NUMERIC DEFAULT 0
+)
+RETURNS SETOF fantasy_games
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  normalized_code TEXT := UPPER(BTRIM(p_code));
+  normalized_entry_fee NUMERIC(10,2) := ROUND(p_entry_fee::NUMERIC, 2);
+  normalized_virtual_start_balance NUMERIC(10,2) :=
+    ROUND(p_virtual_start_balance::NUMERIC, 2);
+  normalized_commission_rate NUMERIC := GREATEST(COALESCE(p_commission_rate, 0), 0);
+  game_row fantasy_games%ROWTYPE;
+  member_count INTEGER;
+  gross_prize_pool NUMERIC(10,2);
+  commission_amount NUMERIC(10,2);
+  net_prize_pool NUMERIC(10,2);
+BEGIN
+  UPDATE fantasy_users
+  SET
+    wallet_balance = ROUND((wallet_balance - normalized_entry_fee)::NUMERIC, 2),
+    updated_at = NOW()
+  WHERE telegram_id = p_creator_telegram_id
+    AND wallet_balance >= normalized_entry_fee;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Insufficient play balance to create an arena.';
+  END IF;
+
+  INSERT INTO fantasy_games (
+    code,
+    creator_telegram_id,
+    asset,
+    entry_fee,
+    virtual_start_balance,
+    prize_pool,
+    status,
+    start_at,
+    end_at
+  )
+  VALUES (
+    normalized_code,
+    p_creator_telegram_id,
+    'BTC',
+    normalized_entry_fee,
+    normalized_virtual_start_balance,
+    normalized_entry_fee,
+    'open',
+    p_start_at,
+    p_end_at
+  )
+  RETURNING * INTO game_row;
+
+  INSERT INTO fantasy_game_members (
+    game_id,
+    telegram_id,
+    entry_fee_paid,
+    virtual_balance
+  )
+  VALUES (
+    game_row.id,
+    p_creator_telegram_id,
+    normalized_entry_fee,
+    normalized_virtual_start_balance
+  );
+
+  SELECT COUNT(*) INTO member_count
+  FROM fantasy_game_members
+  WHERE game_id = game_row.id;
+
+  gross_prize_pool := ROUND((member_count * game_row.entry_fee)::NUMERIC, 2);
+  commission_amount := ROUND(
+    (gross_prize_pool * normalized_commission_rate)::NUMERIC,
+    2
+  );
+  net_prize_pool := ROUND(
+    GREATEST(0, gross_prize_pool - commission_amount)::NUMERIC,
+    2
+  );
+
+  UPDATE fantasy_games
+  SET prize_pool = net_prize_pool
+  WHERE id = game_row.id
+  RETURNING * INTO game_row;
+
+  RETURN NEXT game_row;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION join_fantasy_game_with_entry(
+  p_code TEXT,
+  p_telegram_id BIGINT,
+  p_commission_rate NUMERIC DEFAULT 0
+)
+RETURNS SETOF fantasy_games
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  normalized_code TEXT := UPPER(BTRIM(p_code));
+  normalized_commission_rate NUMERIC := GREATEST(COALESCE(p_commission_rate, 0), 0);
+  game_row fantasy_games%ROWTYPE;
+  member_count INTEGER;
+  gross_prize_pool NUMERIC(10,2);
+  commission_amount NUMERIC(10,2);
+  net_prize_pool NUMERIC(10,2);
+BEGIN
+  SELECT *
+  INTO game_row
+  FROM fantasy_games
+  WHERE code = normalized_code
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Arena not found.';
+  END IF;
+
+  IF game_row.status <> 'open' OR game_row.start_at <= NOW() THEN
+    RAISE EXCEPTION 'This arena has already started.';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM fantasy_game_members
+    WHERE game_id = game_row.id
+      AND telegram_id = p_telegram_id
+  ) THEN
+    RAISE EXCEPTION 'You already joined this arena.';
+  END IF;
+
+  UPDATE fantasy_users
+  SET
+    wallet_balance = ROUND((wallet_balance - game_row.entry_fee)::NUMERIC, 2),
+    updated_at = NOW()
+  WHERE telegram_id = p_telegram_id
+    AND wallet_balance >= game_row.entry_fee;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Insufficient play balance.';
+  END IF;
+
+  BEGIN
+    INSERT INTO fantasy_game_members (
+      game_id,
+      telegram_id,
+      entry_fee_paid,
+      virtual_balance
+    )
+    VALUES (
+      game_row.id,
+      p_telegram_id,
+      game_row.entry_fee,
+      game_row.virtual_start_balance
+    );
+  EXCEPTION
+    WHEN unique_violation THEN
+      RAISE EXCEPTION 'You already joined this arena.';
+  END;
+
+  SELECT COUNT(*) INTO member_count
+  FROM fantasy_game_members
+  WHERE game_id = game_row.id;
+
+  gross_prize_pool := ROUND((member_count * game_row.entry_fee)::NUMERIC, 2);
+  commission_amount := ROUND(
+    (gross_prize_pool * normalized_commission_rate)::NUMERIC,
+    2
+  );
+  net_prize_pool := ROUND(
+    GREATEST(0, gross_prize_pool - commission_amount)::NUMERIC,
+    2
+  );
+
+  UPDATE fantasy_games
+  SET prize_pool = net_prize_pool
+  WHERE id = game_row.id
+  RETURNING * INTO game_row;
+
+  RETURN NEXT game_row;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION place_fantasy_trade_with_debit(
+  p_game_id UUID,
+  p_member_id UUID,
+  p_telegram_id BIGINT,
+  p_event_id TEXT,
+  p_market_id TEXT,
+  p_direction TEXT,
+  p_stake NUMERIC,
+  p_entry_price NUMERIC,
+  p_shares NUMERIC
+)
+RETURNS SETOF fantasy_trades
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  normalized_stake NUMERIC(10,2) := ROUND(p_stake::NUMERIC, 2);
+  game_row fantasy_games%ROWTYPE;
+  trade_row fantasy_trades%ROWTYPE;
+BEGIN
+  SELECT *
+  INTO game_row
+  FROM fantasy_games
+  WHERE id = p_game_id
+  FOR UPDATE;
+
+  IF NOT FOUND OR game_row.status <> 'active' THEN
+    RAISE EXCEPTION 'This league is not active right now.';
+  END IF;
+
+  IF game_row.end_at <= NOW() THEN
+    RAISE EXCEPTION 'This league has already ended.';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM fantasy_game_members
+    WHERE id = p_member_id
+      AND game_id = p_game_id
+      AND telegram_id = p_telegram_id
+  ) THEN
+    RAISE EXCEPTION 'You are not a member of this league.';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM fantasy_trades
+    WHERE game_id = p_game_id
+      AND member_id = p_member_id
+      AND event_id = p_event_id
+  ) THEN
+    RAISE EXCEPTION 'You already placed a fantasy trade for this round.';
+  END IF;
+
+  UPDATE fantasy_game_members
+  SET
+    virtual_balance = ROUND((virtual_balance - normalized_stake)::NUMERIC, 2),
+    total_trades = total_trades + 1
+  WHERE id = p_member_id
+    AND game_id = p_game_id
+    AND telegram_id = p_telegram_id
+    AND virtual_balance >= normalized_stake;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Insufficient virtual balance.';
+  END IF;
+
+  BEGIN
+    INSERT INTO fantasy_trades (
+      game_id,
+      member_id,
+      telegram_id,
+      event_id,
+      market_id,
+      direction,
+      stake,
+      entry_price,
+      shares,
+      outcome,
+      payout
+    )
+    VALUES (
+      p_game_id,
+      p_member_id,
+      p_telegram_id,
+      p_event_id,
+      p_market_id,
+      p_direction,
+      normalized_stake,
+      p_entry_price,
+      p_shares,
+      'PENDING',
+      0
+    )
+    RETURNING * INTO trade_row;
+  EXCEPTION
+    WHEN unique_violation THEN
+      RAISE EXCEPTION 'You already placed a fantasy trade for this round.';
+  END;
+
+  RETURN NEXT trade_row;
+END;
+$$;

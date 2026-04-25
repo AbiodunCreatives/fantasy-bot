@@ -24,6 +24,13 @@ This repo is now virtual-only.
 User profiles, play balances, payouts, and commission records all live in this project's own
 Supabase tables, so a brand-new Supabase project is enough.
 
+## Private beta defaults
+
+- New users start with a `$40` virtual beta wallet.
+- Arena entries use only that virtual balance.
+- Manual deposits and withdrawals stay off until the beta period is over.
+- Run a single bot instance for the beta, backed by real Redis.
+
 ## Quick start
 
 1. Copy `.env.example` to `.env` and fill in Telegram and Supabase values.
@@ -42,7 +49,8 @@ Use Node 22 and point the service at the source entry with a TypeScript-aware co
 - Start command: `pnpm start`
 
 If you prefer to run Node directly on Render, `node src/index.ts` also works with the current import setup.
-For a quick single-instance test deploy, set `REDIS_MODE=memory` in Render and leave `REDIS_URL` empty.
+For private beta, keep the bot on one instance and use `REDIS_MODE=redis`.
+`REDIS_MODE=memory` is best kept for local smoke checks only.
 
 ## Database notes
 

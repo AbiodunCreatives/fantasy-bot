@@ -8,7 +8,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx tmp/e2e-flow-smoke.ts"
   },
   "packageManager": "pnpm@10.30.3",
   "dependencies": {

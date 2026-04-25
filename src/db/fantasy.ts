@@ -201,6 +201,14 @@ function normalizeFantasyTrade(row: FantasyTradeRow): FantasyTrade {
   };
 }
 
+function extractRpcSingleRow<T>(data: T | T[] | null | undefined): T | null {
+  if (!data) {
+    return null;
+  }
+
+  return Array.isArray(data) ? data[0] ?? null : data;
+}
+
 export async function createFantasyGame(input: {
   code: string;
   creatorTelegramId: number;
@@ -230,6 +238,40 @@ export async function createFantasyGame(input: {
   }
 
   return normalizeFantasyGame(data as FantasyGameRow);
+}
+
+export async function createFantasyGameWithEntry(input: {
+  code: string;
+  creatorTelegramId: number;
+  entryFee: number;
+  virtualStartBalance: number;
+  startAt: string;
+  endAt: string;
+  commissionRate: number;
+}): Promise<FantasyGame> {
+  const { data, error } = await supabase.rpc("create_fantasy_game_with_entry", {
+    p_code: input.code,
+    p_creator_telegram_id: input.creatorTelegramId,
+    p_entry_fee: roundMoney(input.entryFee),
+    p_virtual_start_balance: roundMoney(input.virtualStartBalance),
+    p_start_at: input.startAt,
+    p_end_at: input.endAt,
+    p_commission_rate: input.commissionRate,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  const row = extractRpcSingleRow(
+    data as FantasyGameRow | FantasyGameRow[] | null | undefined
+  );
+
+  if (!row) {
+    throw new Error("Fantasy game not created.");
+  }
+
+  return normalizeFantasyGame(row);
 }
 
 export async function getFantasyGameByCode(
@@ -262,6 +304,32 @@ export async function getFantasyGameById(
   }
 
   return data ? normalizeFantasyGame(data as FantasyGameRow) : null;
+}
+
+export async function joinFantasyGameWithEntry(input: {
+  code: string;
+  telegramId: number;
+  commissionRate: number;
+}): Promise<FantasyGame> {
+  const { data, error } = await supabase.rpc("join_fantasy_game_with_entry", {
+    p_code: input.code,
+    p_telegram_id: input.telegramId,
+    p_commission_rate: input.commissionRate,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  const row = extractRpcSingleRow(
+    data as FantasyGameRow | FantasyGameRow[] | null | undefined
+  );
+
+  if (!row) {
+    throw new Error("Fantasy game join failed.");
+  }
+
+  return normalizeFantasyGame(row);
 }
 
 export async function listUserFantasyGames(
@@ -650,6 +718,44 @@ export async function recordFantasyTrade(input: {
   }
 
   return normalizeFantasyTrade(data as FantasyTradeRow);
+}
+
+export async function placeFantasyTradeWithDebit(input: {
+  gameId: string;
+  memberId: string;
+  telegramId: number;
+  eventId: string;
+  marketId: string;
+  direction: FantasyTradeDirection;
+  stake: number;
+  entryPrice: number;
+  shares: number;
+}): Promise<FantasyTrade> {
+  const { data, error } = await supabase.rpc("place_fantasy_trade_with_debit", {
+    p_game_id: input.gameId,
+    p_member_id: input.memberId,
+    p_telegram_id: input.telegramId,
+    p_event_id: input.eventId,
+    p_market_id: input.marketId,
+    p_direction: input.direction,
+    p_stake: roundMoney(input.stake),
+    p_entry_price: input.entryPrice,
+    p_shares: input.shares,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  const row = extractRpcSingleRow(
+    data as FantasyTradeRow | FantasyTradeRow[] | null | undefined
+  );
+
+  if (!row) {
+    throw new Error("Fantasy trade not recorded.");
+  }
+
+  return normalizeFantasyTrade(row);
 }
 
 export async function getFantasyTradeForMemberEvent(

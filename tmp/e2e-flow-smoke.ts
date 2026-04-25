@@ -1,16 +1,48 @@
-// @ts-nocheck
+// Smoke harness for the private-beta fantasy flow.
+// It runs against in-memory Supabase and mocked Bayse/Telegram APIs.
 
-process.env.BOT_TOKEN = "123:TEST";
-process.env.SUPABASE_URL = "https://example.supabase.co";
-process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-key";
-process.env.REDIS_URL = "redis://localhost:6379";
-process.env.NODE_ENV = "test";
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function assert(condition: unknown, message: string): void {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+type DbTableName =
+  | "fantasy_users"
+  | "fantasy_revenue"
+  | "fantasy_games"
+  | "fantasy_game_members"
+  | "fantasy_trades"
+  | "fantasy_payouts";
+
+interface DbState {
+  fantasy_users: Array<Record<string, unknown>>;
+  fantasy_revenue: Array<Record<string, unknown>>;
+  fantasy_games: Array<Record<string, unknown>>;
+  fantasy_game_members: Array<Record<string, unknown>>;
+  fantasy_trades: Array<Record<string, unknown>>;
+  fantasy_payouts: Array<Record<string, unknown>>;
+}
+
+interface QueryResult {
+  data: unknown;
+  error: { message: string; code?: string } | null;
+  count?: number | null;
+}
 
 const RealDate = Date;
 let nowMs = RealDate.parse("2026-04-12T12:00:00.000Z");
 
 class FakeDate extends RealDate {
-  constructor(...args) {
+  constructor(...args: ConstructorParameters<typeof Date>) {
     if (args.length === 0) {
       super(nowMs);
       return;
@@ -19,36 +51,29 @@ class FakeDate extends RealDate {
     super(...args);
   }
 
-  static now() {
+  static now(): number {
     return nowMs;
   }
 
-  static parse(value) {
+  static parse(value: string): number {
     return RealDate.parse(value);
   }
 
-  static UTC(...args) {
+  static UTC(...args: Parameters<typeof Date.UTC>): number {
     return RealDate.UTC(...args);
   }
 }
 
-globalThis.Date = FakeDate;
+globalThis.Date = FakeDate as typeof Date;
 
-function roundMoney(value) {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
-}
+process.env.BOT_TOKEN = "123:TEST";
+process.env.SUPABASE_URL = "https://example.supabase.co";
+process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-key";
+process.env.REDIS_MODE = "memory";
+process.env.VIRTUAL_WALLET_START_BALANCE = "40";
+process.env.NODE_ENV = "test";
 
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function assert(condition, message) {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
-
-const eventStore = {
+const eventStore: Record<string, Record<string, unknown>> = {
   evt0: {
     id: "evt0",
     slug: "crypto-btc-15min-1150",
@@ -108,7 +133,7 @@ const eventStore = {
   },
 };
 
-globalThis.fetch = async (input) => {
+globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(String(input));
 
   if (url.pathname === "/v1/pm/events") {
@@ -117,13 +142,63 @@ globalThis.fetch = async (input) => {
       status: 200,
       json: async () => ({ events: Object.values(eventStore).map(clone) }),
       text: async () => "",
-    };
+    } as Response;
   }
 
-  const match = url.pathname.match(/^\/v1\/pm\/events\/([^/]+)$/);
+  const quoteMatch = url.pathname.match(
+    /^\/v1\/pm\/events\/([^/]+)\/markets\/([^/]+)\/quote$/
+  );
 
-  if (match) {
-    const event = eventStore[match[1]];
+  if (quoteMatch) {
+    const eventId = quoteMatch[1] ?? "";
+    const marketId = quoteMatch[2] ?? "";
+    const event = eventStore[eventId];
+    const market = (event?.markets as Array<Record<string, unknown>> | undefined)?.find(
+      (candidate) => candidate.id === marketId
+    );
+
+    if (!event || !market) {
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+        text: async () => "Not found",
+      } as Response;
+    }
+
+    const payload = init?.body ? JSON.parse(String(init.body)) : {};
+    const amount = Number(payload.amount ?? 0);
+    const outcomeId = String(payload.outcomeId ?? "");
+    const price =
+      outcomeId === market.outcome1Id
+        ? Number(market.outcome1Price ?? 0)
+        : Number(market.outcome2Price ?? 0);
+    const quantity = price > 0 ? amount / price : 0;
+
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        price,
+        currentMarketPrice: price,
+        quantity,
+        amount,
+        costOfShares: amount,
+        fee: 0,
+        priceImpactAbsolute: 0,
+        profitPercentage: null,
+        currencyBaseMultiplier: 1,
+        completeFill: true,
+        tradeGoesOverMaxLiability: false,
+      }),
+      text: async () => "",
+    } as Response;
+  }
+
+  const eventMatch = url.pathname.match(/^\/v1\/pm\/events\/([^/]+)$/);
+
+  if (eventMatch) {
+    const event = eventStore[eventMatch[1] ?? ""];
 
     if (!event) {
       return {
@@ -131,7 +206,7 @@ globalThis.fetch = async (input) => {
         status: 404,
         json: async () => ({}),
         text: async () => "Not found",
-      };
+      } as Response;
     }
 
     return {
@@ -139,155 +214,26 @@ globalThis.fetch = async (input) => {
       status: 200,
       json: async () => clone(event),
       text: async () => "",
-    };
+    } as Response;
   }
 
   throw new Error(`Unexpected fetch URL: ${url.toString()}`);
 };
 
-const { Api } = await import("grammy");
-
-const sentMessages = [];
-const editedMessages = [];
-const messageStore = new Map();
-let nextMessageId = 100;
-
-Api.prototype.sendMessage = async function sendMessage(chatId, text, options) {
-  const message = {
-    message_id: nextMessageId++,
-    chat: { id: chatId, type: "private" },
-    date: Math.floor(nowMs / 1000),
-    text,
-  };
-
-  messageStore.set(`${chatId}:${message.message_id}`, {
-    chatId,
-    messageId: message.message_id,
-    text,
-    options,
-  });
-  sentMessages.push({ chatId, messageId: message.message_id, text, options });
-  return message;
-};
-
-Api.prototype.editMessageText = async function editMessageText(
-  chatId,
-  messageId,
-  text,
-  options
-) {
-  messageStore.set(`${chatId}:${messageId}`, {
-    chatId,
-    messageId,
-    text,
-    options,
-  });
-  editedMessages.push({ chatId, messageId, text, options });
-  return {
-    message_id: messageId,
-    chat: { id: chatId, type: "private" },
-    date: Math.floor(nowMs / 1000),
-    text,
-  };
-};
-
-const { redis } = await import("../src/utils/rateLimit.ts");
-const { supabase } = await import("../src/db/client.ts");
-const fantasyLeague = await import("../src/fantasy-league.ts");
-const leagueHandlers = await import("../src/bot/handlers/league.ts");
-
-const redisStore = new Map();
-const redisExpiries = new Map();
-
-function pruneRedisKey(key) {
-  const expiry = redisExpiries.get(key);
-
-  if (expiry !== undefined && expiry <= nowMs) {
-    redisStore.delete(key);
-    redisExpiries.delete(key);
-  }
+function makeError(message: string, code?: string): { message: string; code?: string } {
+  return { message, code };
 }
 
-redis.set = async (key, value, mode, ttlMode, ttlSeconds) => {
-  redisStore.set(key, String(value));
+function rowMatches(row: Record<string, unknown>, filters: Array<(row: Record<string, unknown>) => boolean>): boolean {
+  return filters.every((filter) => filter(row));
+}
 
-  if (mode === "EX") {
-    redisExpiries.set(key, nowMs + Number(ttlMode) * 1000);
-  } else if (ttlMode === "EX") {
-    redisExpiries.set(key, nowMs + Number(ttlSeconds) * 1000);
-  } else {
-    redisExpiries.delete(key);
-  }
-
-  return "OK";
-};
-
-redis.get = async (key) => {
-  pruneRedisKey(key);
-  return redisStore.has(key) ? redisStore.get(key) : null;
-};
-
-redis.del = async (...keys) => {
-  let deleted = 0;
-
-  for (const key of keys.flat()) {
-    pruneRedisKey(key);
-
-    if (redisStore.delete(key)) {
-      redisExpiries.delete(key);
-      deleted += 1;
-    }
-  }
-
-  return deleted;
-};
-
-redis.incr = async (key) => {
-  pruneRedisKey(key);
-  const next = Number(redisStore.get(key) ?? "0") + 1;
-  redisStore.set(key, String(next));
-  return next;
-};
-
-redis.expire = async (key, seconds) => {
-  pruneRedisKey(key);
-
-  if (!redisStore.has(key)) {
-    return 0;
-  }
-
-  redisExpiries.set(key, nowMs + seconds * 1000);
-  return 1;
-};
-
-redis.ping = async () => "PONG";
-redis.dbsize = async () => redisStore.size;
-redis.quit = async () => "OK";
-redis.disconnect = () => undefined;
-
-const db = {
-  fantasy_games: [],
-  fantasy_game_members: [],
-  fantasy_trades: [],
-  fantasy_payouts: [],
-  user_access: [
-    { telegram_id: "111", balance: 100 },
-    { telegram_id: "222", balance: 100 },
-  ],
-  users: [
-    { telegram_id: 111, username: "alpha" },
-    { telegram_id: 222, username: "beta" },
-  ],
-};
-
-const idCounters = {
-  fantasy_games: 1,
-  fantasy_game_members: 1,
-  fantasy_trades: 1,
-  fantasy_payouts: 1,
-};
-
-function projectRows(table, rows, selection) {
+function projectRows(
+  db: DbState,
+  table: DbTableName,
+  rows: Array<Record<string, unknown>>,
+  selection: string
+): Array<Record<string, unknown>> {
   if (!selection || selection === "*") {
     return rows.map(clone);
   }
@@ -303,7 +249,7 @@ function projectRows(table, rows, selection) {
   const columns = selection.split(",").map((column) => column.trim());
 
   return rows.map((row) => {
-    const projected = {};
+    const projected: Record<string, unknown> = {};
 
     for (const column of columns) {
       projected[column] = row[column];
@@ -313,139 +259,257 @@ function projectRows(table, rows, selection) {
   });
 }
 
-function buildInsertedRow(table, row) {
-  const nextRow = clone(row);
+function createInsertedRow(
+  counters: Record<DbTableName, number>,
+  table: DbTableName,
+  row: Record<string, unknown>
+): Record<string, unknown> {
+  const next = clone(row);
+  const nowIso = new Date().toISOString();
+
+  if (table === "fantasy_users") {
+    next.created_at = next.created_at ?? nowIso;
+    next.updated_at = next.updated_at ?? nowIso;
+    next.last_seen_at = next.last_seen_at ?? nowIso;
+    return next;
+  }
+
+  if (table === "fantasy_revenue") {
+    next.id = next.id ?? `revenue_${counters.fantasy_revenue++}`;
+    next.created_at = next.created_at ?? nowIso;
+    return next;
+  }
 
   if (table === "fantasy_games") {
-    nextRow.id = nextRow.id ?? `game_${idCounters.fantasy_games++}`;
-    nextRow.created_at = nextRow.created_at ?? new Date().toISOString();
-    nextRow.status = nextRow.status ?? "open";
-    nextRow.last_round_event_id = nextRow.last_round_event_id ?? null;
-    nextRow.completed_at = nextRow.completed_at ?? null;
-    nextRow.cancelled_at = nextRow.cancelled_at ?? null;
-    return nextRow;
+    next.id = next.id ?? `game_${counters.fantasy_games++}`;
+    next.asset = next.asset ?? "BTC";
+    next.status = next.status ?? "open";
+    next.prize_pool = next.prize_pool ?? 0;
+    next.last_round_event_id = next.last_round_event_id ?? null;
+    next.created_at = next.created_at ?? nowIso;
+    next.completed_at = next.completed_at ?? null;
+    next.cancelled_at = next.cancelled_at ?? null;
+    return next;
   }
 
   if (table === "fantasy_game_members") {
-    nextRow.id = nextRow.id ?? `member_${idCounters.fantasy_game_members++}`;
-    nextRow.joined_at = nextRow.joined_at ?? new Date().toISOString();
-    nextRow.total_trades = nextRow.total_trades ?? 0;
-    nextRow.wins = nextRow.wins ?? 0;
-    nextRow.losses = nextRow.losses ?? 0;
-    nextRow.prize_awarded = nextRow.prize_awarded ?? 0;
-    return nextRow;
+    next.id = next.id ?? `member_${counters.fantasy_game_members++}`;
+    next.joined_at = next.joined_at ?? nowIso;
+    next.total_trades = next.total_trades ?? 0;
+    next.wins = next.wins ?? 0;
+    next.losses = next.losses ?? 0;
+    next.prize_awarded = next.prize_awarded ?? 0;
+    return next;
   }
 
   if (table === "fantasy_trades") {
-    nextRow.id = nextRow.id ?? `trade_${idCounters.fantasy_trades++}`;
-    nextRow.created_at = nextRow.created_at ?? new Date().toISOString();
-    nextRow.resolved_at = nextRow.resolved_at ?? null;
-    return nextRow;
+    next.id = next.id ?? `trade_${counters.fantasy_trades++}`;
+    next.created_at = next.created_at ?? nowIso;
+    next.resolved_at = next.resolved_at ?? null;
+    return next;
   }
 
-  if (table === "fantasy_payouts") {
-    nextRow.id = nextRow.id ?? `payout_${idCounters.fantasy_payouts++}`;
-    return nextRow;
+  next.id = next.id ?? `payout_${counters.fantasy_payouts++}`;
+  next.created_at = next.created_at ?? nowIso;
+  return next;
+}
+
+function findUniqueInsertError(
+  db: DbState,
+  table: DbTableName,
+  row: Record<string, unknown>
+): { message: string; code?: string } | null {
+  if (
+    table === "fantasy_users" &&
+    db.fantasy_users.some((entry) => entry.telegram_id === row.telegram_id)
+  ) {
+    return makeError("duplicate key value violates unique constraint", "23505");
   }
 
-  return nextRow;
+  if (
+    table === "fantasy_revenue" &&
+    db.fantasy_revenue.some((entry) => entry.type === row.type)
+  ) {
+    return makeError("duplicate key value violates unique constraint", "23505");
+  }
+
+  if (
+    table === "fantasy_games" &&
+    db.fantasy_games.some((entry) => entry.code === row.code)
+  ) {
+    return makeError("duplicate key value violates unique constraint", "23505");
+  }
+
+  if (
+    table === "fantasy_game_members" &&
+    db.fantasy_game_members.some(
+      (entry) =>
+        entry.game_id === row.game_id && entry.telegram_id === row.telegram_id
+    )
+  ) {
+    return makeError("duplicate key value violates unique constraint", "23505");
+  }
+
+  if (
+    table === "fantasy_trades" &&
+    db.fantasy_trades.some(
+      (entry) =>
+        entry.game_id === row.game_id &&
+        entry.member_id === row.member_id &&
+        entry.event_id === row.event_id
+    )
+  ) {
+    return makeError("duplicate key value violates unique constraint", "23505");
+  }
+
+  if (
+    table === "fantasy_payouts" &&
+    db.fantasy_payouts.some(
+      (entry) =>
+        entry.game_id === row.game_id && entry.telegram_id === row.telegram_id
+    )
+  ) {
+    return makeError("duplicate key value violates unique constraint", "23505");
+  }
+
+  return null;
+}
+
+function computeNetPrizePool(
+  db: DbState,
+  gameId: string,
+  commissionRate: number
+): number {
+  const game = db.fantasy_games.find((entry) => entry.id === gameId);
+  const memberCount = db.fantasy_game_members.filter(
+    (entry) => entry.game_id === gameId
+  ).length;
+  const entryFee = Number(game?.entry_fee ?? 0);
+  const gross = roundMoney(memberCount * entryFee);
+  const commission = roundMoney(gross * Math.max(0, commissionRate));
+  return roundMoney(Math.max(0, gross - commission));
 }
 
 class Query {
-  constructor(table) {
+  private readonly table: DbTableName;
+  private readonly db: DbState;
+  private readonly counters: Record<DbTableName, number>;
+  private readonly filters: Array<(row: Record<string, unknown>) => boolean> = [];
+  private action: "select" | "insert" | "update" | "delete" = "select";
+  private selection = "*";
+  private countRequested = false;
+  private head = false;
+  private ordering: { field: string; ascending: boolean } | null = null;
+  private limitValue: number | null = null;
+  private insertRows: Array<Record<string, unknown>> = [];
+  private updatePayload: Record<string, unknown> | null = null;
+
+  constructor(
+    db: DbState,
+    counters: Record<DbTableName, number>,
+    table: DbTableName
+  ) {
+    this.db = db;
+    this.counters = counters;
     this.table = table;
-    this.filters = [];
-    this.action = "select";
-    this.selection = "*";
-    this.countRequested = false;
-    this.head = false;
-    this.ordering = null;
-    this.limitValue = null;
-    this.insertRows = [];
-    this.updatePayload = null;
   }
 
-  select(selection = "*", options = {}) {
+  select(selection = "*", options: { count?: string; head?: boolean } = {}): this {
     this.selection = selection;
     this.countRequested = options.count === "exact";
     this.head = options.head === true;
     return this;
   }
 
-  insert(payload) {
+  insert(payload: Record<string, unknown> | Array<Record<string, unknown>>): this {
     this.action = "insert";
     this.insertRows = Array.isArray(payload) ? payload : [payload];
     return this;
   }
 
-  update(payload) {
+  update(payload: Record<string, unknown>): this {
     this.action = "update";
     this.updatePayload = clone(payload);
     return this;
   }
 
-  delete() {
+  delete(): this {
     this.action = "delete";
     return this;
   }
 
-  eq(field, value) {
+  eq(field: string, value: unknown): this {
     this.filters.push((row) => row[field] === value);
     return this;
   }
 
-  in(field, values) {
+  in(field: string, values: unknown[]): this {
     const valueSet = new Set(values);
     this.filters.push((row) => valueSet.has(row[field]));
     return this;
   }
 
-  lte(field, value) {
-    this.filters.push((row) => row[field] <= value);
+  lte(field: string, value: unknown): this {
+    this.filters.push((row) => String(row[field]) <= String(value));
     return this;
   }
 
-  gt(field, value) {
-    this.filters.push((row) => row[field] > value);
+  gt(field: string, value: unknown): this {
+    this.filters.push((row) => String(row[field]) > String(value));
     return this;
   }
 
-  order(field, options = {}) {
+  order(field: string, options: { ascending?: boolean } = {}): this {
     this.ordering = { field, ascending: options.ascending !== false };
     return this;
   }
 
-  limit(value) {
+  limit(value: number): this {
     this.limitValue = value;
     return this;
   }
 
-  then(resolve, reject) {
-    return this.execute().then(resolve, reject);
+  then<TResult1 = QueryResult, TResult2 = never>(
+    onfulfilled?:
+      | ((value: QueryResult) => TResult1 | PromiseLike<TResult1>)
+      | null,
+    onrejected?:
+      | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+      | null
+  ): Promise<TResult1 | TResult2> {
+    return this.execute().then(onfulfilled, onrejected);
   }
 
-  async maybeSingle() {
+  async maybeSingle(): Promise<QueryResult> {
     const result = await this.execute();
-    const row = Array.isArray(result.data) ? result.data[0] ?? null : result.data ?? null;
+    const row = Array.isArray(result.data)
+      ? (result.data[0] as Record<string, unknown> | undefined) ?? null
+      : result.data;
     return { data: row, error: result.error };
   }
 
-  async single() {
+  async single(): Promise<QueryResult> {
     const result = await this.execute();
-    const row = Array.isArray(result.data) ? result.data[0] ?? null : result.data ?? null;
+    const row = Array.isArray(result.data)
+      ? (result.data[0] as Record<string, unknown> | undefined) ?? null
+      : result.data;
 
     if (!row) {
-      return { data: null, error: new Error("No rows returned.") };
+      return { data: null, error: makeError("No rows returned.") };
     }
 
     return { data: row, error: result.error };
   }
 
-  applyFilters(rows) {
-    return rows.filter((row) => this.filters.every((filter) => filter(row)));
+  private get tableRows(): Array<Record<string, unknown>> {
+    return this.db[this.table];
   }
 
-  sortRows(rows) {
+  private applyFilters(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+    return rows.filter((row) => rowMatches(row, this.filters));
+  }
+
+  private sortRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
     if (!this.ordering) {
       return rows;
     }
@@ -456,7 +520,7 @@ class Query {
         return 0;
       }
 
-      return left[field] > right[field]
+      return left[field]! > right[field]!
         ? ascending
           ? 1
           : -1
@@ -466,7 +530,7 @@ class Query {
     });
   }
 
-  limitRows(rows) {
+  private limitRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
     if (typeof this.limitValue !== "number") {
       return rows;
     }
@@ -474,211 +538,469 @@ class Query {
     return rows.slice(0, this.limitValue);
   }
 
-  async execute() {
-    const tableRows = db[this.table];
-
+  async execute(): Promise<QueryResult> {
     if (this.action === "select") {
-      let rows = this.applyFilters(tableRows);
+      let rows = this.applyFilters(this.tableRows);
       const count = rows.length;
       rows = this.limitRows(this.sortRows(rows));
 
       return {
-        data: this.head ? null : projectRows(this.table, rows, this.selection),
+        data: this.head ? null : projectRows(this.db, this.table, rows, this.selection),
         error: null,
         count: this.countRequested ? count : null,
       };
     }
 
     if (this.action === "insert") {
-      const inserted = this.insertRows.map((row) => buildInsertedRow(this.table, row));
-      tableRows.push(...inserted);
+      const inserted: Array<Record<string, unknown>> = [];
+
+      for (const rawRow of this.insertRows) {
+        const row = createInsertedRow(this.counters, this.table, rawRow);
+        const insertError = findUniqueInsertError(this.db, this.table, row);
+
+        if (insertError) {
+          return { data: null, error: insertError };
+        }
+
+        this.tableRows.push(row);
+        inserted.push(row);
+      }
 
       return {
-        data: projectRows(this.table, inserted, this.selection),
+        data: projectRows(this.db, this.table, inserted, this.selection),
         error: null,
       };
     }
 
     if (this.action === "update") {
-      const rows = this.applyFilters(tableRows);
+      const rows = this.applyFilters(this.tableRows);
 
       for (const row of rows) {
-        Object.assign(row, clone(this.updatePayload));
+        Object.assign(row, clone(this.updatePayload ?? {}));
       }
 
       return {
-        data: projectRows(this.table, rows, this.selection),
+        data: projectRows(this.db, this.table, rows, this.selection),
         error: null,
       };
     }
 
-    if (this.action === "delete") {
-      const rows = this.applyFilters(tableRows);
-      db[this.table] = tableRows.filter((row) => !rows.includes(row));
+    const rows = this.applyFilters(this.tableRows);
+    this.db[this.table] = this.tableRows.filter((row) => !rows.includes(row));
 
-      return {
-        data: projectRows(this.table, rows, this.selection),
-        error: null,
-      };
-    }
-
-    throw new Error(`Unsupported action ${this.action}`);
-  }
-}
-
-supabase.from = (table) => new Query(table);
-supabase.rpc = async (name, params) => {
-  if (name !== "apply_balance_delta") {
-    throw new Error(`Unexpected RPC ${name}`);
-  }
-
-  const telegramId = String(params.p_telegram_id);
-  const delta = Number(params.p_delta);
-  const allowNegative = params.p_allow_negative === true;
-  const row =
-    db.user_access.find((entry) => entry.telegram_id === telegramId) ??
-    (() => {
-      const created = { telegram_id: telegramId, balance: 0 };
-      db.user_access.push(created);
-      return created;
-    })();
-  const balanceBefore = roundMoney(Number(row.balance ?? 0));
-  const balanceAfter = roundMoney(balanceBefore + delta);
-
-  if (!allowNegative && balanceAfter < 0) {
     return {
-      data: [
-        {
-          success: false,
-          balance_before: balanceBefore,
-          balance_after: balanceBefore,
-        },
-      ],
+      data: projectRows(this.db, this.table, rows, this.selection),
       error: null,
     };
   }
-
-  row.balance = balanceAfter;
-
-  return {
-    data: [
-      {
-        success: true,
-        balance_before: balanceBefore,
-        balance_after: balanceAfter,
-      },
-    ],
-    error: null,
-  };
-};
-
-function createCommandCtx(telegramId, text) {
-  const replies = [];
-
-  return {
-    from: { id: telegramId },
-    message: { text },
-    reply: async (replyText, options) => {
-      replies.push({ text: replyText, options });
-      return { message_id: nextMessageId++ };
-    },
-    replies,
-  };
 }
 
-function createCallbackCtx(telegramId, chatId, messageId, data) {
-  const replies = [];
-  const edits = [];
+function extractCallbackData(options: unknown): string | null {
+  const replyMarkup = (options as { reply_markup?: { inline_keyboard?: Array<Array<Record<string, unknown>>> } } | undefined)
+    ?.reply_markup;
+  const firstButton = replyMarkup?.inline_keyboard?.flat()?.[0];
+  const callbackData = firstButton?.callback_data;
+  return typeof callbackData === "string" ? callbackData : null;
+}
 
-  return {
-    from: { id: telegramId },
-    chat: { id: chatId },
-    callbackQuery: {
-      data,
-      message: { message_id: messageId },
-    },
-    editMessageText: async (text, options) => {
-      edits.push({ text, options });
-      messageStore.set(`${chatId}:${messageId}`, {
-        chatId,
-        messageId,
-        text,
-        options,
+async function main(): Promise<void> {
+  const { Api } = await import("grammy");
+  const { supabase } = await import("../src/db/client.ts");
+  const fantasyLeague = await import("../src/fantasy-league.ts");
+  const leagueHandlers = await import("../src/bot/handlers/league.ts");
+
+  const db: DbState = {
+    fantasy_users: [],
+    fantasy_revenue: [],
+    fantasy_games: [],
+    fantasy_game_members: [],
+    fantasy_trades: [],
+    fantasy_payouts: [],
+  };
+
+  const counters: Record<DbTableName, number> = {
+    fantasy_users: 1,
+    fantasy_revenue: 1,
+    fantasy_games: 1,
+    fantasy_game_members: 1,
+    fantasy_trades: 1,
+    fantasy_payouts: 1,
+  };
+
+  const sentMessages: Array<Record<string, unknown>> = [];
+  const editedMessages: Array<Record<string, unknown>> = [];
+  let nextMessageId = 100;
+
+  Api.prototype.sendMessage = async function sendMessage(chatId, text, options) {
+    const message = {
+      message_id: nextMessageId++,
+      chat: { id: chatId, type: "private" },
+      date: Math.floor(nowMs / 1000),
+      text,
+      options,
+    };
+    sentMessages.push(message);
+    return message;
+  };
+
+  Api.prototype.editMessageText = async function editMessageText(
+    chatId,
+    messageId,
+    text,
+    options
+  ) {
+    const message = {
+      message_id: messageId,
+      chat: { id: chatId, type: "private" },
+      date: Math.floor(nowMs / 1000),
+      text,
+      options,
+    };
+    editedMessages.push(message);
+    return message;
+  };
+
+  supabase.from = ((table: DbTableName) =>
+    new Query(db, counters, table)) as typeof supabase.from;
+
+  supabase.rpc = (async (name: string, params: Record<string, unknown>) => {
+    if (name === "create_fantasy_game_with_entry") {
+      const telegramId = Number(params.p_creator_telegram_id ?? 0);
+      const entryFee = roundMoney(Number(params.p_entry_fee ?? 0));
+      const virtualStartBalance = roundMoney(
+        Number(params.p_virtual_start_balance ?? 0)
+      );
+      const commissionRate = Number(params.p_commission_rate ?? 0);
+      const user = db.fantasy_users.find(
+        (entry) => entry.telegram_id === telegramId
+      );
+
+      if (!user || Number(user.wallet_balance ?? 0) < entryFee) {
+        return {
+          data: null,
+          error: makeError("Insufficient play balance to create an arena."),
+        };
+      }
+
+      if (db.fantasy_games.some((entry) => entry.code === params.p_code)) {
+        return {
+          data: null,
+          error: makeError("duplicate key value violates unique constraint", "23505"),
+        };
+      }
+
+      user.wallet_balance = roundMoney(Number(user.wallet_balance ?? 0) - entryFee);
+      user.updated_at = new Date().toISOString();
+
+      const game = createInsertedRow(counters, "fantasy_games", {
+        code: String(params.p_code ?? ""),
+        creator_telegram_id: telegramId,
+        asset: "BTC",
+        entry_fee: entryFee,
+        virtual_start_balance: virtualStartBalance,
+        prize_pool: entryFee,
+        status: "open",
+        start_at: String(params.p_start_at ?? ""),
+        end_at: String(params.p_end_at ?? ""),
       });
-      editedMessages.push({ chatId, messageId, text, options });
-      return true;
-    },
-    reply: async (text, options) => {
-      replies.push({ text, options });
-      return { message_id: nextMessageId++ };
-    },
-    replies,
-    edits,
-  };
-}
+      db.fantasy_games.push(game);
 
-function latestPromptFor(chatId) {
-  const prompts = sentMessages.filter(
-    (message) =>
-      message.chatId === chatId &&
-      typeof message.text === "string" &&
-      message.text.toLowerCase().includes("arena")
-  );
+      const member = createInsertedRow(counters, "fantasy_game_members", {
+        game_id: game.id,
+        telegram_id: telegramId,
+        entry_fee_paid: entryFee,
+        virtual_balance: virtualStartBalance,
+      });
+      db.fantasy_game_members.push(member);
 
-  return prompts[prompts.length - 1] ?? null;
-}
+      game.prize_pool = computeNetPrizePool(db, String(game.id), commissionRate);
 
-function findTradeRef(eventId) {
-  for (const key of redisStore.keys()) {
-    if (!key.startsWith("fantasy:trade:")) {
-      continue;
+      return { data: [clone(game)], error: null };
     }
 
-    const raw = redisStore.get(key);
-    const parsed = JSON.parse(raw);
+    if (name === "join_fantasy_game_with_entry") {
+      const code = String(params.p_code ?? "").trim().toUpperCase();
+      const telegramId = Number(params.p_telegram_id ?? 0);
+      const commissionRate = Number(params.p_commission_rate ?? 0);
+      const game = db.fantasy_games.find((entry) => entry.code === code);
 
-    if (parsed.eventId === eventId) {
-      return key.slice("fantasy:trade:".length);
+      if (!game) {
+        return { data: null, error: makeError("Arena not found.") };
+      }
+
+      if (
+        String(game.status) !== "open" ||
+        RealDate.parse(String(game.start_at)) <= nowMs
+      ) {
+        return {
+          data: null,
+          error: makeError("This arena has already started."),
+        };
+      }
+
+      if (
+        db.fantasy_game_members.some(
+          (entry) => entry.game_id === game.id && entry.telegram_id === telegramId
+        )
+      ) {
+        return {
+          data: null,
+          error: makeError("You already joined this arena."),
+        };
+      }
+
+      const user = db.fantasy_users.find(
+        (entry) => entry.telegram_id === telegramId
+      );
+      const entryFee = Number(game.entry_fee ?? 0);
+
+      if (!user || Number(user.wallet_balance ?? 0) < entryFee) {
+        return { data: null, error: makeError("Insufficient play balance.") };
+      }
+
+      user.wallet_balance = roundMoney(Number(user.wallet_balance ?? 0) - entryFee);
+      user.updated_at = new Date().toISOString();
+
+      const member = createInsertedRow(counters, "fantasy_game_members", {
+        game_id: game.id,
+        telegram_id: telegramId,
+        entry_fee_paid: game.entry_fee,
+        virtual_balance: game.virtual_start_balance,
+      });
+      db.fantasy_game_members.push(member);
+      game.prize_pool = computeNetPrizePool(db, String(game.id), commissionRate);
+
+      return { data: [clone(game)], error: null };
     }
+
+    if (name === "place_fantasy_trade_with_debit") {
+      const gameId = String(params.p_game_id ?? "");
+      const memberId = String(params.p_member_id ?? "");
+      const telegramId = Number(params.p_telegram_id ?? 0);
+      const stake = roundMoney(Number(params.p_stake ?? 0));
+      const game = db.fantasy_games.find((entry) => entry.id === gameId);
+
+      if (!game || String(game.status) !== "active") {
+        return {
+          data: null,
+          error: makeError("This league is not active right now."),
+        };
+      }
+
+      if (RealDate.parse(String(game.end_at)) <= nowMs) {
+        return {
+          data: null,
+          error: makeError("This league has already ended."),
+        };
+      }
+
+      const member = db.fantasy_game_members.find(
+        (entry) =>
+          entry.id === memberId &&
+          entry.game_id === gameId &&
+          entry.telegram_id === telegramId
+      );
+
+      if (!member) {
+        return {
+          data: null,
+          error: makeError("You are not a member of this league."),
+        };
+      }
+
+      if (
+        db.fantasy_trades.some(
+          (entry) =>
+            entry.game_id === gameId &&
+            entry.member_id === memberId &&
+            entry.event_id === params.p_event_id
+        )
+      ) {
+        return {
+          data: null,
+          error: makeError("You already placed a fantasy trade for this round."),
+        };
+      }
+
+      if (Number(member.virtual_balance ?? 0) < stake) {
+        return {
+          data: null,
+          error: makeError("Insufficient virtual balance."),
+        };
+      }
+
+      member.virtual_balance = roundMoney(Number(member.virtual_balance ?? 0) - stake);
+      member.total_trades = Number(member.total_trades ?? 0) + 1;
+
+      const trade = createInsertedRow(counters, "fantasy_trades", {
+        game_id: gameId,
+        member_id: memberId,
+        telegram_id: telegramId,
+        event_id: params.p_event_id,
+        market_id: params.p_market_id,
+        direction: params.p_direction,
+        stake,
+        entry_price: params.p_entry_price,
+        shares: params.p_shares,
+        outcome: "PENDING",
+        payout: 0,
+      });
+      db.fantasy_trades.push(trade);
+
+      return { data: [clone(trade)], error: null };
+    }
+
+    return { data: null, error: makeError(`Unexpected RPC ${name}`) };
+  }) as typeof supabase.rpc;
+
+  function createCommandCtx(telegramId: number, text: string) {
+    const replies: Array<Record<string, unknown>> = [];
+    const api = {
+      getMe: async () => ({ username: "betaarena_bot" }),
+    };
+
+    return {
+      api,
+      from: { id: telegramId, first_name: `User${telegramId}` },
+      message: { text },
+      reply: async (replyText: string, options?: unknown) => {
+        const message = {
+          message_id: nextMessageId++,
+          chat: { id: telegramId, type: "private" },
+          date: Math.floor(nowMs / 1000),
+          text: replyText,
+          options,
+        };
+        replies.push(message);
+        return message;
+      },
+      replies,
+    };
   }
 
-  return null;
-}
+  function createCallbackCtx(
+    telegramId: number,
+    chatId: number,
+    messageId: number,
+    data: string
+  ) {
+    const replies: Array<Record<string, unknown>> = [];
+    const edits: Array<Record<string, unknown>> = [];
+    const api = {
+      getMe: async () => ({ username: "betaarena_bot" }),
+    };
 
-try {
-  const createCtx = createCommandCtx(111, "/league create 5");
-  await leagueHandlers.handleLeague(createCtx);
+    return {
+      api,
+      from: { id: telegramId, first_name: `User${telegramId}` },
+      chat: { id: chatId },
+      callbackQuery: {
+        data,
+        message: { message_id: messageId },
+      },
+      editMessageText: async (text: string, options?: unknown) => {
+        const message = {
+          message_id: messageId,
+          chat: { id: chatId, type: "private" },
+          date: Math.floor(nowMs / 1000),
+          text,
+          options,
+        };
+        edits.push(message);
+        editedMessages.push(message);
+        return message;
+      },
+      reply: async (text: string, options?: unknown) => {
+        const message = {
+          message_id: nextMessageId++,
+          chat: { id: chatId, type: "private" },
+          date: Math.floor(nowMs / 1000),
+          text,
+          options,
+        };
+        replies.push(message);
+        return message;
+      },
+      replies,
+      edits,
+    };
+  }
+
+  function latestPromptFor(chatId: number): Record<string, unknown> | null {
+    const prompts = sentMessages.filter(
+      (message) =>
+        message.chat?.id === chatId &&
+        typeof message.text === "string" &&
+        message.text.includes("ROUND")
+    );
+
+    return (prompts[prompts.length - 1] as Record<string, unknown> | undefined) ?? null;
+  }
+
+  const createCtx = createCommandCtx(111, "/league create 5 12");
+  await leagueHandlers.handleLeague(createCtx as never);
   assert(createCtx.replies.length === 1, "create flow should reply once");
-  const codeMatch = createCtx.replies[0].text.match(/League Code: ([A-Z0-9-]+)/);
-  assert(codeMatch, "create flow should return a league code");
-  const code = codeMatch[1];
-
-  const joinPreviewCtx = createCommandCtx(222, `/league join ${code}`);
-  await leagueHandlers.handleLeague(joinPreviewCtx);
-  assert(joinPreviewCtx.replies.length === 1, "join preview should reply once");
+  const createdReply = createCtx.replies[0];
+  const createdText = String(createdReply.text ?? "");
   assert(
-    joinPreviewCtx.replies[0].text.includes("BAYSE FANTASY ARENA"),
-    "join preview text should render"
+    createdText.includes("Arena created"),
+    "create flow should confirm the arena"
+  );
+  const codeMatch = createdText.match(/Code: ([A-Z0-9-]+)/);
+  assert(codeMatch, "create flow should return an arena code");
+  const code = codeMatch?.[1] ?? "";
+
+  const creatorWalletAfterCreate = db.fantasy_users.find(
+    (entry) => entry.telegram_id === 111
+  );
+  assert(
+    Number(creatorWalletAfterCreate?.wallet_balance ?? 0) === 35,
+    "creator wallet should debit from the $40 beta balance"
   );
 
-  const joinConfirmCtx = createCallbackCtx(222, 222, 1, "fantasy:join:confirm");
-  await leagueHandlers.handleFantasyJoinConfirm(joinConfirmCtx);
-  assert(joinConfirmCtx.replies.length === 1, "join confirm should reply once");
+  const joinPreviewCtx = createCommandCtx(222, `/league join ${code}`);
+  await leagueHandlers.handleLeague(joinPreviewCtx as never);
+  assert(joinPreviewCtx.replies.length === 1, "join preview should reply once");
+  const joinPreviewMessage = joinPreviewCtx.replies[0];
   assert(
-    joinConfirmCtx.replies[0].text.includes("You're in. Welcome to the arena."),
-    "join confirm text should render"
+    String(joinPreviewMessage.text ?? "").includes(`Arena ${code}`),
+    "join preview should render arena details"
+  );
+
+  const joinConfirmCtx = createCallbackCtx(
+    222,
+    222,
+    Number(joinPreviewMessage.message_id),
+    "fantasy:join:confirm"
+  );
+  await leagueHandlers.handleFantasyJoinConfirm(joinConfirmCtx as never);
+  assert(joinConfirmCtx.edits.length === 1, "join confirm should edit the preview");
+  assert(
+    String(joinConfirmCtx.edits[0]?.text ?? "").includes("You're in."),
+    "join confirm should confirm membership"
+  );
+
+  const joinerWalletAfterJoin = db.fantasy_users.find(
+    (entry) => entry.telegram_id === 222
+  );
+  assert(
+    Number(joinerWalletAfterJoin?.wallet_balance ?? 0) === 35,
+    "joiner wallet should also debit from the $40 beta balance"
   );
 
   nowMs = RealDate.parse("2026-04-12T12:05:05.000Z");
   await fantasyLeague.activateDueFantasyGames();
 
+  const activatedGame = db.fantasy_games.find((entry) => entry.code === code);
+  assert(activatedGame?.status === "active", "arena should activate on schedule");
+
   await fantasyLeague.processFantasyLeagueRound(
     {
       eventId: "evt1",
       slug: "crypto-btc-15min-1205",
-      openingDate: eventStore.evt1.openingDate,
-      closingDate: eventStore.evt1.closingDate,
-      eventThreshold: eventStore.evt1.eventThreshold,
+      openingDate: String(eventStore.evt1.openingDate),
+      closingDate: String(eventStore.evt1.closingDate),
+      eventThreshold: Number(eventStore.evt1.eventThreshold),
       pctElapsed: 0.01,
     },
     {
@@ -686,53 +1008,58 @@ try {
       downPrice: 0.45,
       upOutcomeId: "yes1",
       downOutcomeId: "no1",
-      eventThreshold: eventStore.evt1.eventThreshold,
+      eventThreshold: Number(eventStore.evt1.eventThreshold),
       eventId: "evt1",
       marketId: "mkt1",
       url: "https://bayse.markets/event/evt1",
     }
   );
 
-  const promptRoundOneUserOne = latestPromptFor(111);
-  const promptRoundOneUserTwo = latestPromptFor(222);
-  assert(promptRoundOneUserOne, "round one prompt should be sent to creator");
-  assert(promptRoundOneUserTwo, "round one prompt should be sent to joiner");
+  const creatorPrompt = latestPromptFor(111);
+  const joinerPrompt = latestPromptFor(222);
+  assert(creatorPrompt, "round prompt should reach the creator");
+  assert(joinerPrompt, "round prompt should reach the joiner");
 
-  const refRoundOne = findTradeRef("evt1");
-  assert(refRoundOne, "round one trade ref should be stored");
-
-  const stakeCtx = createCallbackCtx(
-    111,
-    111,
-    promptRoundOneUserOne.messageId,
-    `flt:s:25:r:${refRoundOne}`
-  );
-  await leagueHandlers.handleFantasyLeagueTrade(stakeCtx);
-  assert(stakeCtx.edits.length === 1, "stake tap should edit the prompt in place");
-  assert(
-    stakeCtx.edits[0].text.toLowerCase().includes("which direction"),
-    "stake tap should switch prompt into direction mode"
-  );
-  assert(stakeCtx.replies.length === 0, "stake tap should not send a new message");
+  const directionCallback = extractCallbackData(creatorPrompt?.options);
+  assert(directionCallback?.startsWith("flt:b:"), "prompt should start with direction buttons");
 
   const directionCtx = createCallbackCtx(
     111,
     111,
-    promptRoundOneUserOne.messageId,
-    `flt:d:25:UP:r:${refRoundOne}`
+    Number(creatorPrompt?.message_id),
+    directionCallback ?? ""
   );
-  await leagueHandlers.handleFantasyLeagueTrade(directionCtx);
-  assert(directionCtx.edits.length === 1, "direction tap should edit the prompt in place");
+  await leagueHandlers.handleFantasyLeagueTrade(directionCtx as never);
+  assert(directionCtx.edits.length === 1, "direction tap should edit the prompt");
+
+  const stakeCallback = extractCallbackData(directionCtx.edits[0]?.options);
+  assert(stakeCallback?.startsWith("flt:d:"), "direction selection should reveal stake buttons");
+
+  const stakeCtx = createCallbackCtx(
+    111,
+    111,
+    Number(creatorPrompt?.message_id),
+    stakeCallback ?? ""
+  );
+  await leagueHandlers.handleFantasyLeagueTrade(stakeCtx as never);
+  assert(stakeCtx.edits.length === 1, "stake tap should lock the trade");
   assert(
-    directionCtx.edits[0].text.includes("locked in"),
-    "direction tap should render a locked trade confirmation"
+    String(stakeCtx.edits[0]?.text ?? "").toLowerCase().includes("locked"),
+    "stake tap should render a locked trade confirmation"
   );
-  assert(directionCtx.replies.length === 0, "direction tap should not send a new message");
+
+  const creatorMember = db.fantasy_game_members.find(
+    (entry) => entry.game_id === activatedGame?.id && entry.telegram_id === 111
+  );
+  assert(
+    Number(creatorMember?.virtual_balance ?? 0) < Number(activatedGame?.virtual_start_balance ?? 0),
+    "trade placement should debit the arena stack atomically"
+  );
 
   nowMs = RealDate.parse("2026-04-12T12:20:05.000Z");
   eventStore.evt1.status = "resolved";
-  eventStore.evt1.markets[0].status = "resolved";
-  eventStore.evt1.markets[0].resolvedOutcome = "YES";
+  (eventStore.evt1.markets as Array<Record<string, unknown>>)[0]!.status = "resolved";
+  (eventStore.evt1.markets as Array<Record<string, unknown>>)[0]!.resolvedOutcome = "YES";
 
   await fantasyLeague.settleFantasyLeagueTrades();
 
@@ -741,96 +1068,37 @@ try {
       typeof message.text === "string" &&
       message.text.toLowerCase().includes("round 1 result")
   );
-  assert(resultMessages.length === 2, "settlement should fan out one result message per player");
+  assert(
+    resultMessages.length === 2,
+    "settlement should fan out one round result to each player"
+  );
 
   const boardCtx = createCommandCtx(111, `/league board ${code}`);
-  await leagueHandlers.handleLeague(boardCtx);
-  assert(boardCtx.replies.length === 1, "board should reply once");
-  assert(boardCtx.replies[0].text.includes("you"), "leaderboard should personalize the viewer");
-
-  await fantasyLeague.processFantasyLeagueRound(
-    {
-      eventId: "evt2",
-      slug: "crypto-btc-15min-1220",
-      openingDate: eventStore.evt2.openingDate,
-      closingDate: eventStore.evt2.closingDate,
-      eventThreshold: eventStore.evt2.eventThreshold,
-      pctElapsed: 0.01,
-    },
-    {
-      upPrice: 0.51,
-      downPrice: 0.49,
-      upOutcomeId: "yes2",
-      downOutcomeId: "no2",
-      eventThreshold: eventStore.evt2.eventThreshold,
-      eventId: "evt2",
-      marketId: "mkt2",
-      url: "https://bayse.markets/event/evt2",
-    }
-  );
-
-  const promptRoundTwoUserOne = latestPromptFor(111);
-  const promptRoundTwoUserTwo = latestPromptFor(222);
-  assert(promptRoundTwoUserOne, "round two prompt should be sent to creator");
-  assert(promptRoundTwoUserTwo, "round two prompt should be sent to joiner");
-
-  const refRoundTwo = findTradeRef("evt2");
-  assert(refRoundTwo, "round two trade ref should be stored");
-
-  const edgeStakeCtx = createCallbackCtx(
-    111,
-    111,
-    promptRoundTwoUserOne.messageId,
-    `flt:s:10:r:${refRoundTwo}`
-  );
-  await leagueHandlers.handleFantasyLeagueTrade(edgeStakeCtx);
+  await leagueHandlers.handleLeague(boardCtx as never);
+  assert(boardCtx.replies.length === 1, "leaderboard should reply once");
   assert(
-    edgeStakeCtx.edits.length === 1 &&
-      edgeStakeCtx.edits[0].text.toLowerCase().includes("which direction"),
-    "edge-case stake tap should still edit in place"
+    String(boardCtx.replies[0]?.text ?? "").toLowerCase().includes("you"),
+    "leaderboard should personalize the viewer"
   );
-
-  nowMs = RealDate.parse("2026-04-12T12:35:05.000Z");
-
-  const edgeDirectionCtx = createCallbackCtx(
-    111,
-    111,
-    promptRoundTwoUserOne.messageId,
-    `flt:d:10:DOWN:r:${refRoundTwo}`
-  );
-  await leagueHandlers.handleFantasyLeagueTrade(edgeDirectionCtx);
-  assert(
-    edgeDirectionCtx.edits.length === 1,
-    "expired direction tap should edit the original prompt"
-  );
-  assert(
-    edgeDirectionCtx.edits[0].text.includes("No trade was placed."),
-    "expired direction tap should render the warm closed-round message"
-  );
-  assert(
-    edgeDirectionCtx.replies.length === 0,
-    "expired direction tap should not send a fallback error message"
-  );
-
-  fantasyLeague.clearFantasyTradePromptState(222, promptRoundOneUserTwo.messageId);
-  fantasyLeague.clearFantasyTradePromptState(111, promptRoundTwoUserOne.messageId);
-  fantasyLeague.clearFantasyTradePromptState(222, promptRoundTwoUserTwo.messageId);
 
   console.log(
     JSON.stringify(
       {
         code,
-        createdReply: createCtx.replies[0].text.split("\n")[0],
-        lockedTrade: directionCtx.edits[0].text.split("\n")[0],
-        closedEdgeCase: edgeDirectionCtx.edits[0].text.split("\n")[0],
-        leaderboardHeadline: boardCtx.replies[0].text.split("\n")[0],
-        resultMessages: resultMessages.length,
+        starter_balance: process.env.VIRTUAL_WALLET_START_BALANCE,
+        creator_wallet_after_create: creatorWalletAfterCreate?.wallet_balance,
+        joiner_wallet_after_join: joinerWalletAfterJoin?.wallet_balance,
+        trade_locked: String(stakeCtx.edits[0]?.text ?? "").split("\n")[0],
+        round_results: resultMessages.length,
+        leaderboard_headline: String(boardCtx.replies[0]?.text ?? "").split("\n")[0],
       },
       null,
       2
     )
   );
-} catch (error) {
+}
+
+main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
-}
+});

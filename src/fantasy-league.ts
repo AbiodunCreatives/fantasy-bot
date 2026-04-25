@@ -9,21 +9,18 @@ import {
   type RoundPricing,
 } from "./bayse-market.ts";
 import { config } from "./config.ts";
-import { getBalance, creditBalance, debitBalance } from "./db/balances.ts";
+import { getBalance, creditBalance } from "./db/balances.ts";
 import {
-  addFantasyGameMember,
   applyFantasyTradeSettlement,
   awardFantasyPrize,
-  createFantasyGame,
-  creditFantasyBalance,
-  debitFantasyBalance,
+  createFantasyGameWithEntry,
   getFantasyGameByCode,
   getFantasyGameById,
   getFantasyGameMember,
   getFantasyLeaderboard,
   getLatestFantasyTradeForMember,
   getFantasyTradeForMemberEvent,
-  incrementFantasyMemberTradeCount,
+  joinFantasyGameWithEntry,
   listActiveFantasyGames,
   listDueOpenFantasyGames,
   listFantasyGameMembers,
@@ -35,8 +32,8 @@ import {
   listFantasyTradesForGameEvent,
   listPendingFantasyTradesForGame,
   listUserFantasyGames,
+  placeFantasyTradeWithDebit,
   recalculateFantasyPrizePool,
-  recordFantasyTrade,
   reopenFantasyTradeSettlement,
   revokeFantasyPrize,
   settleFantasyTrade,
@@ -47,6 +44,7 @@ import {
   type FantasyTrade,
   type FantasyTradeDirection,
 } from "./db/fantasy.ts";
+import { upsertUserProfile } from "./db/users.ts";
 import {
   ARENA_DURATION_HOURS_OPTIONS,
   anonymizePlayer,
@@ -1546,115 +1544,30 @@ export async function createFantasyLeagueGame(
   ).toISOString();
   const virtualStartBalance = getVirtualStartBalance(normalizedEntryFee);
   const code = await generateUniqueFantasyGameCode();
-  const debited = await debitBalance(creatorTelegramId, normalizedEntryFee, {
-    reason: "fantasy_entry_fee",
-    referenceType: "fantasy_game",
-    referenceId: code,
-    metadata: {
-      role: "creator",
-      amount: normalizedEntryFee,
-    },
+  await upsertUserProfile(creatorTelegramId);
+
+  return createFantasyGameWithEntry({
+    code,
+    creatorTelegramId,
+    entryFee: normalizedEntryFee,
+    virtualStartBalance,
+    startAt,
+    endAt,
+    commissionRate: FANTASY_COMMISSION_RATE,
   });
-
-  if (!debited) {
-    throw new Error("Insufficient play balance to create an arena.");
-  }
-
-  try {
-    const game = await createFantasyGame({
-      code,
-      creatorTelegramId,
-      entryFee: normalizedEntryFee,
-      virtualStartBalance,
-      startAt,
-      endAt,
-    });
-
-    await addFantasyGameMember({
-      gameId: game.id,
-      telegramId: creatorTelegramId,
-      entryFeePaid: normalizedEntryFee,
-      virtualBalance: virtualStartBalance,
-    });
-
-    await recalculateFantasyPrizePool(game.id, FANTASY_COMMISSION_RATE);
-
-    return (await getFantasyGameById(game.id)) ?? game;
-  } catch (error) {
-    await creditBalance(creatorTelegramId, normalizedEntryFee, {
-      reason: "fantasy_refund",
-      referenceType: "fantasy_game",
-      referenceId: code,
-      metadata: {
-        role: "creator",
-        amount: normalizedEntryFee,
-      },
-    }).catch(() => null);
-    throw error;
-  }
 }
 
 export async function joinFantasyLeagueGame(
   telegramId: number,
   code: string
 ): Promise<FantasyGame> {
-  const game = await getFantasyGameByCode(code.trim().toUpperCase());
+  await upsertUserProfile(telegramId);
 
-  if (!game) {
-    throw new Error("Arena not found.");
-  }
-
-  if (game.status !== "open") {
-    throw new Error("This arena has already started.");
-  }
-
-  if (Date.parse(game.start_at) <= Date.now()) {
-    throw new Error("This arena has already started.");
-  }
-
-  const existingMember = await getFantasyGameMember(game.id, telegramId);
-
-  if (existingMember) {
-    throw new Error("You already joined this arena.");
-  }
-
-  const debited = await debitBalance(telegramId, game.entry_fee, {
-    reason: "fantasy_entry_fee",
-    referenceType: "fantasy_game",
-    referenceId: game.code,
-    metadata: {
-      role: "member",
-      amount: game.entry_fee,
-    },
+  return joinFantasyGameWithEntry({
+    code: code.trim().toUpperCase(),
+    telegramId,
+    commissionRate: FANTASY_COMMISSION_RATE,
   });
-
-  if (!debited) {
-    throw new Error("Insufficient play balance.");
-  }
-
-  try {
-    await addFantasyGameMember({
-      gameId: game.id,
-      telegramId,
-      entryFeePaid: game.entry_fee,
-      virtualBalance: game.virtual_start_balance,
-    });
-
-    await recalculateFantasyPrizePool(game.id, FANTASY_COMMISSION_RATE);
-
-    return (await getFantasyGameById(game.id)) ?? game;
-  } catch (error) {
-    await creditBalance(telegramId, game.entry_fee, {
-      reason: "fantasy_refund",
-      referenceType: "fantasy_game",
-      referenceId: game.code,
-      metadata: {
-        role: "member",
-        amount: game.entry_fee,
-      },
-    }).catch(() => null);
-    throw error;
-  }
 }
 
 export async function getFantasyLeagueJoinPreview(
@@ -1964,22 +1877,14 @@ export async function placeFantasyTradeFromCallbackData(input: {
     throw new Error("Pricing is unavailable for this fantasy round.");
   }
 
-  const debited = await debitFantasyBalance(member.id, stake);
+  const shares = quote.quantity;
 
-  if (!debited) {
-    throw new Error(
-      `Insufficient virtual balance. Available: ${formatMoney(member.virtual_balance)}`
-    );
+  if (!Number.isFinite(shares) || shares <= 0) {
+    throw new Error("Pricing is unavailable for this fantasy round.");
   }
 
   try {
-    const shares = quote.quantity;
-
-    if (!Number.isFinite(shares) || shares <= 0) {
-      throw new Error("Pricing is unavailable for this fantasy round.");
-    }
-
-    await recordFantasyTrade({
+    await placeFantasyTradeWithDebit({
       gameId: game.id,
       memberId: member.id,
       telegramId: input.telegramId,
@@ -1990,32 +1895,32 @@ export async function placeFantasyTradeFromCallbackData(input: {
       entryPrice,
       shares,
     });
-
-    await incrementFantasyMemberTradeCount(member.id).catch((error) => {
-      console.warn(
-        `[fantasy] Failed to increment trade count for ${member.id}:`,
-        error
-      );
-    });
-
-    const refreshedMember = await getFantasyGameMember(game.id, input.telegramId);
-
-    return {
-      game,
-      stake,
-      direction,
-      roundNumber: getGameRoundNumber(game, payload.openingDate),
-      entryPrice,
-      shares,
-      remainingBalance: refreshedMember?.virtual_balance ?? 0,
-      stackIfWin: roundMoney((refreshedMember?.virtual_balance ?? 0) + shares),
-      stackIfLoss: refreshedMember?.virtual_balance ?? 0,
-      closesAt: payload.closingDate,
-    };
   } catch (error) {
-    await creditFantasyBalance(member.id, stake).catch(() => null);
+    const message = error instanceof Error ? error.message : "";
+
+    if (message.toLowerCase().includes("insufficient virtual balance")) {
+      throw new Error(
+        `Insufficient virtual balance. Available: ${formatMoney(member.virtual_balance)}`
+      );
+    }
+
     throw error;
   }
+
+  const refreshedMember = await getFantasyGameMember(game.id, input.telegramId);
+
+  return {
+    game,
+    stake,
+    direction,
+    roundNumber: getGameRoundNumber(game, payload.openingDate),
+    entryPrice,
+    shares,
+    remainingBalance: refreshedMember?.virtual_balance ?? 0,
+    stackIfWin: roundMoney((refreshedMember?.virtual_balance ?? 0) + shares),
+    stackIfLoss: refreshedMember?.virtual_balance ?? 0,
+    closesAt: payload.closingDate,
+  };
 }
 
 export async function settleFantasyLeagueTrades(): Promise<void> {
@@ -2402,6 +2307,6 @@ export async function getFantasyLeagueJoinSummary(
     `Starts: ${formatMediumDateTime(game.start_at)}`,
     `Ends: ${formatMediumDateTime(game.end_at)}`,
     "",
-    "Joining is final. No refunds after you join.",
+    "Private beta wallets are virtual only. Joining is final for this test round.",
   ].join("\n");
 }

@@ -2,9 +2,9 @@ import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 
 import { getCurrentRoundSnapshot } from "../../bayse-market.ts";
+import { config } from "../../config.ts";
 import { getBalance } from "../../db/balances.ts";
 import {
-  addFantasyPlayBalance,
   buildFantasyTradeStakeSelection,
   clearFantasyTradePromptState,
   clearPendingFantasyLeagueJoin,
@@ -21,7 +21,6 @@ import {
   loadPendingFantasyLeagueJoin,
   placeFantasyTradeFromCallbackData,
   saveFantasyNextRoundReminder,
-  savePendingFantasyCustomFundAmount,
   savePendingFantasyLeagueJoin,
   FANTASY_MIN_ENTRY_FEE,
   type FantasyTradePlacementResult,
@@ -80,6 +79,13 @@ function formatMoney(
   })}`;
 }
 
+function formatStarterBalance(): string {
+  return formatMoney(config.VIRTUAL_WALLET_START_BALANCE, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+}
+
 function formatDateTime(value: string): string {
   const date = new Date(value);
   return `${date.toLocaleDateString("en-US", {
@@ -118,16 +124,16 @@ function buildArenaInsufficientBalanceText(
     `You need ${formatMoney(entryFee)} available for this arena entry.`,
     `Your play balance: ${formatMoney(balance)}`,
     "",
-    "Arena entries and prizes use your virtual play balance.",
+    `Private beta wallets start at ${formatStarterBalance()} and manual top-ups are off for now.`,
   ].join("\n");
 }
 
 function buildStartWelcomeText(): string {
   return [
-    "🎯 Bayse Arena",
+    "Bayse Arena",
     "",
-    "Fantasy trading on BTC. Real entry. Virtual funds.",
-    "Best bankroll wins the pot.",
+    "BTC fantasy trading for the private beta.",
+    `Every tester starts with ${formatStarterBalance()} in play-money credits.`,
   ].join("\n");
 }
 
@@ -139,10 +145,10 @@ function buildStartWelcomeKeyboard(): InlineKeyboard {
 
 function buildHowItWorksText(): string {
   return [
-    "1. Pay entry fee ($1-$10)",
-    "2. Get virtual funds = fee × 100",
-    "3. Trade each 15-min BTC round for the arena duration",
-    "4. Top bankroll splits the prize pool",
+    `1. Every tester starts with ${formatStarterBalance()} in a beta wallet`,
+    "2. Arena entry fees ($1-$10) come from that play-money balance",
+    "3. Your arena stack is still entry fee x 100 for trading",
+    "4. Top bankroll wins the virtual prize pool",
   ].join("\n");
 }
 
@@ -157,8 +163,9 @@ function buildStartOnboardingText(input: {
   return [
     `Welcome, ${input.firstName}.`,
     "",
-    "Bayse Arena is BTC fantasy trading where the best bankroll wins the pot.",
-    `Current balance: ${formatMoney(input.balance)}`,
+    "Bayse Arena is running in private beta with play-money only.",
+    `Beta wallet: ${formatMoney(input.balance)}`,
+    `Starter balance for new testers: ${formatStarterBalance()}`,
   ].join("\n");
 }
 
@@ -174,7 +181,7 @@ function buildCreateArenaPickerText(balance: number): string {
     "",
     "Pick an entry fee:",
     "",
-    `Your balance: ${formatMoney(balance)}`,
+    `Beta wallet: ${formatMoney(balance)}`,
   ].join("\n");
 }
 
@@ -203,7 +210,7 @@ function buildCreateArenaDurationText(input: {
     "Pick how long the arena should run:",
     "Bayse runs 4 rounds every hour.",
     "",
-    `Your balance: ${formatMoney(input.balance)}`,
+    `Beta wallet: ${formatMoney(input.balance)}`,
   ].join("\n");
 }
 
@@ -499,58 +506,53 @@ function buildFantasyJoinSuccessText(input: {
     input.roundsUntilStart <= 0
       ? "Starts in: next BTC round"
       : `Starts in: ~${input.roundsUntilStart * 15} min`,
-    `Play balance: ${formatMoney(input.playBalance)}`,
+    `Beta wallet: ${formatMoney(input.playBalance)}`,
     "I'll ping you when round 1 opens.",
   ].join("\n");
 }
 
 function buildInsufficientBalanceWithOptionsText(balance: number): string {
   return [
-    "You need funds to join an arena.",
+    "You do not have enough beta balance to join this arena.",
     "",
-    `Your balance: ${formatMoney(balance)}`,
+    `Beta wallet: ${formatMoney(balance)}`,
   ].join("\n");
 }
 
 function buildInsufficientBalanceKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("💳 Add Funds", FUNDS_ADD)
-    .text("👀 Watch live arena", LOBBY_LIVE);
+    .text("Beta wallet", FUNDS_ADD)
+    .text("Watch live arena", LOBBY_LIVE);
 }
 
 function buildCreateInsufficientKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("💳 Add Funds", FUNDS_ADD)
+    .text("Beta wallet", FUNDS_ADD)
     .text("Pick a lower fee", ARENA_CREATE);
 }
 
 function buildAddFundsText(): string {
   return [
-    "How much do you want to deposit?",
+    `Private beta wallets are fixed at ${formatStarterBalance()}.`,
+    "Manual deposits and top-ups are disabled during the test window.",
   ].join("\n");
 }
 
 function buildAddFundsKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("$5", "funds:amount:5")
-    .text("$10", "funds:amount:10")
-    .text("$20", "funds:amount:20")
-    .text("$50", "funds:amount:50")
-    .row()
-    .text("Custom amount", FUNDS_CUSTOM)
-    .row()
-    .text("🏟 Browse Arenas", FUNDS_BACK_TO_LOBBY);
+    .text("Browse arenas", FUNDS_BACK_TO_LOBBY)
+    .text("Watch live", LOBBY_LIVE);
 }
 
 function buildCustomFundsPromptText(): string {
-  return "Enter an amount in USD (e.g. 15):";
+  return buildAddFundsText();
 }
 
 function buildFundsAddedText(amount: number, balance: number): string {
   return [
-    `✅ ${formatMoney(amount)} added to your balance.`,
+    buildAddFundsText(),
     "",
-    `Balance: ${formatMoney(balance)}`,
+    `Beta wallet: ${formatMoney(balance)}`,
   ].join("\n");
 }
 
@@ -672,6 +674,8 @@ function buildLeagueHelpText(): string {
     "- Bot keeps 8% commission when the league closes",
     "- Top finishers split the prize pool",
     "- Joining is final",
+    `- Private beta wallet: ${formatStarterBalance()} per tester`,
+    "- Manual deposits and top-ups are disabled during beta",
     "",
     "All balances in this bot are virtual and live in this project's Supabase.",
   ].join("\n");
@@ -1394,16 +1398,17 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
   }
 
   if (data === FUNDS_ADD) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await editTradePromptMessage(ctx, buildAddFundsText(), buildAddFundsKeyboard());
     return;
   }
 
   if (data === FUNDS_CUSTOM) {
-    await savePendingFantasyCustomFundAmount(ctx.from.id);
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await editTradePromptMessage(
       ctx,
-      buildCustomFundsPromptText(),
-      new InlineKeyboard().text("🏟 Back to lobby", FUNDS_BACK_TO_LOBBY)
+      buildAddFundsText(),
+      buildAddFundsKeyboard()
     );
     return;
   }
@@ -1415,19 +1420,11 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
   }
 
   if (data.startsWith("funds:amount:")) {
-    const amount = Number.parseFloat(data.slice("funds:amount:".length));
-
-    if (!Number.isFinite(amount) || amount <= 0) {
-      await ctx.reply("Something went wrong. Please try again.");
-      return;
-    }
-
-    const balance = await addFantasyPlayBalance(ctx.from.id, amount);
     await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await editTradePromptMessage(
       ctx,
-      buildFundsAddedText(amount, balance),
-      buildFundsAddedKeyboard()
+      buildAddFundsText(),
+      buildAddFundsKeyboard()
     );
     return;
   }
@@ -1570,16 +1567,8 @@ export async function handleFantasyTextInput(ctx: Context): Promise<boolean> {
     return false;
   }
 
-  const amount = Number.parseFloat(text);
-
-  if (!Number.isFinite(amount) || amount <= 0) {
-    await ctx.reply("Enter an amount in USD (e.g. 15):");
-    return true;
-  }
-
-  const balance = await addFantasyPlayBalance(ctx.from.id, amount);
   await clearPendingFantasyCustomFundAmount(ctx.from.id);
-  await ctx.reply(buildFundsAddedText(amount, balance), {
+  await ctx.reply(buildAddFundsText(), {
     reply_markup: buildFundsAddedKeyboard(),
   });
   return true;

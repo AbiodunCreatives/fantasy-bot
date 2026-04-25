@@ -44,7 +44,7 @@ const envSchema = z.object({
   VIRTUAL_WALLET_START_BALANCE: z.coerce
     .number()
     .positive()
-    .default(100),
+    .default(40),
   FANTASY_MONITOR_INTERVAL_MS: z.coerce
     .number()
     .int()
@@ -85,6 +85,11 @@ if (config.REDIS_MODE === "redis") {
 }
 
 if (config.NODE_ENV === "production") {
+  if (config.REDIS_MODE !== "redis") {
+    console.error("ERROR: REDIS_MODE must be redis in production. Memory mode is only for local testing.");
+    process.exit(1);
+  }
+
   if (config.WEBHOOK_URL && !config.WEBHOOK_SECRET) {
     console.error("ERROR: WEBHOOK_SECRET is required in production when WEBHOOK_URL is set.");
     process.exit(1);

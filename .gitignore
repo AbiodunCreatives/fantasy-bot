@@ -4,3 +4,4 @@ dist/
 .env.*
 !.env.example
 *.log
+src/bot/handlers/Untitled-1.txt
