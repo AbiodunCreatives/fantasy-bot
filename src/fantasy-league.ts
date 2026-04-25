@@ -1203,6 +1203,24 @@ function renderLeaderboardText(input: {
   leaderboard: FantasyLeaderboardEntry[];
   viewerTelegramId: number;
 }): string {
+  const viewerEntry =
+    input.leaderboard.find((entry) => entry.telegram_id === input.viewerTelegramId) ?? null;
+  const timingLine =
+    input.game.status === "completed" || input.game.status === "cancelled"
+      ? `Ended: ${formatMediumDateTime(input.game.completed_at ?? input.game.end_at)}`
+      : input.game.status === "open"
+        ? `Starts: ${formatMediumDateTime(input.game.start_at)}`
+        : `Ends in: ${formatCompactDuration(Date.parse(input.game.end_at) - Date.now())}`;
+  const summaryLine =
+    input.game.status === "completed" || input.game.status === "cancelled"
+      ? `Your payout prize - ${formatMoney(viewerEntry?.prize_awarded ?? 0)}`
+      : `Prize if game ended now: ${formatMoney(
+          getProjectedPrizeForUser(
+            input.leaderboard,
+            input.game.prize_pool,
+            input.viewerTelegramId
+          )
+        )}`;
   const rows =
     input.leaderboard.length === 0
       ? ["No players yet."]
@@ -1230,18 +1248,12 @@ function renderLeaderboardText(input: {
       input.game.status === "active" ? "LIVE" : input.game.status.toUpperCase()
     }`,
     "",
-    `Ends in: ${formatCompactDuration(Date.parse(input.game.end_at) - Date.now())}`,
+    timingLine,
     `Net prize pool: ${formatMoney(input.game.prize_pool)}`,
     "",
     ...rows,
     "",
-    `Prize if game ended now: ${formatMoney(
-      getProjectedPrizeForUser(
-        input.leaderboard,
-        input.game.prize_pool,
-        input.viewerTelegramId
-      )
-    )}`,
+    summaryLine,
   ].join("\n");
 }
 
