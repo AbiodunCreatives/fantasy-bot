@@ -48,11 +48,23 @@ CREATE TABLE IF NOT EXISTS fantasy_game_members (
   entry_fee_paid NUMERIC(10,2) NOT NULL,
   virtual_balance NUMERIC(10,2) NOT NULL,
   total_trades INT NOT NULL DEFAULT 0,
+  last_traded_round INT,
+  consecutive_missed_rounds INT NOT NULL DEFAULT 0,
   wins INT NOT NULL DEFAULT 0,
   losses INT NOT NULL DEFAULT 0,
   prize_awarded NUMERIC(10,2) NOT NULL DEFAULT 0,
   UNIQUE (game_id, telegram_id)
 );
+
+ALTER TABLE IF EXISTS fantasy_game_members
+  ADD COLUMN IF NOT EXISTS last_traded_round INT;
+
+ALTER TABLE IF EXISTS fantasy_game_members
+  ADD COLUMN IF NOT EXISTS consecutive_missed_rounds INT NOT NULL DEFAULT 0;
+
+UPDATE fantasy_game_members
+SET consecutive_missed_rounds = 0
+WHERE consecutive_missed_rounds IS NULL;
 
 CREATE TABLE IF NOT EXISTS fantasy_trades (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

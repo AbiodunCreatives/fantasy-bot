@@ -1,8 +1,9 @@
-import { InlineKeyboard } from "grammy";
+import { InlineKeyboard, InputFile } from "grammy";
 import type { Context } from "grammy";
 import { PublicKey } from "@solana/web3.js";
 
 import { getCurrentRoundSnapshot } from "../../bayse-market.ts";
+import { formatBtcChartCaption, getBtcChartImage } from "../../btc-chart.ts";
 import { config } from "../../config.ts";
 import { getBalance } from "../../db/balances.ts";
 import {
@@ -19,6 +20,8 @@ import {
   listFantasyLeagueSnapshots,
   loadPendingFantasyLeagueJoin,
   placeFantasyTradeFromCallbackData,
+  prepareFantasyTradePromptForArena,
+  registerFantasyTradePromptDelivery,
   saveFantasyNextRoundReminder,
   savePendingFantasyLeagueJoin,
   FANTASY_MIN_ENTRY_FEE,
@@ -57,9 +60,12 @@ const ARENA_CREATE = "arena:create";
 const ARENA_DURATION_PREFIX = "arena:duration:";
 const ARENA_BACK_TO_LOBBY = "arena:lobby";
 const ARENA_LIVE_PREFIX = "arena:live:";
+const ARENA_TRADE_PREFIX = "arena:trade:";
 const ARENA_REFRESH_PREFIX = "arena:refresh:";
 const ARENA_CATCH_UP_PREFIX = "arena:catch:";
 const ARENA_REMIND_PREFIX = "arena:remind:";
+const BTC_CHART_OPEN = "arena:chart:btc";
+const BTC_CHART_REFRESH = "arena:chart:btc:refresh";
 const ARENA_JOIN_CONFIRM = "fantasy:join:confirm";
 const ARENA_JOIN_DECLINE = "fantasy:join:decline";
 const FUNDS_ADD = "funds:add";
@@ -187,6 +193,13 @@ function buildHowItWorksKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text("Got it - let me in", START_LOBBY);
 }
 
+function buildBtcChartKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("🔄 Refresh", BTC_CHART_REFRESH)
+    .row()
+    .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
+}
+
 function buildStartOnboardingText(input: {
   firstName: string;
   balance: number;
@@ -204,6 +217,8 @@ function buildStartOnboardingKeyboard(): InlineKeyboard {
   const keyboard = new InlineKeyboard()
     .text("Browse Arenas", START_LOBBY)
     .text("Wallet", START_WALLET)
+    .row()
+    .text("📊 BTC Chart", BTC_CHART_OPEN)
     .row()
     .text("+ Create Arena", ARENA_CREATE);
 
@@ -437,6 +452,7 @@ function buildArenaLobbyKeyboard(input: {
     }
   }
 
+  keyboard.text("📊 BTC Chart", BTC_CHART_OPEN).row();
   keyboard.text("+ Create New Arena", ARENA_CREATE);
 
   if (input.liveOnly) {
@@ -723,6 +739,8 @@ function buildArenaLiveKeyboard(input: {
     keyboard.row().text("⬆ How to catch #1", `${ARENA_CATCH_UP_PREFIX}${input.code}`);
   }
 
+  keyboard.row().text("📊 BTC Chart", BTC_CHART_OPEN);
+
   keyboard
     .row()
     .text("🔄 Refresh live", `${ARENA_LIVE_PREFIX}${input.code}`)
@@ -741,6 +759,8 @@ function buildArenaBoardKeyboard(input: {
   if (input.canCatchUp) {
     keyboard.text("⬆ How to catch #1", `${ARENA_CATCH_UP_PREFIX}${input.code}`);
   }
+
+  keyboard.row().text("📊 BTC Chart", BTC_CHART_OPEN);
 
   keyboard
     .text("🔄 Refresh", `${ARENA_REFRESH_PREFIX}${input.code}`)
@@ -1013,6 +1033,47 @@ async function editTradePromptMessage(
   }
 
   await ctx.reply(text);
+}
+
+async function sendBtcChartMessage(
+  ctx: Context,
+  options?: { forceRefresh?: boolean }
+): Promise<void> {
+  const chart = await getBtcChartImage({
+    forceRefresh: options?.forceRefresh,
+  });
+  const photo = new InputFile(chart.buffer, "btc-usdt-15m.png");
+  const caption = formatBtcChartCaption({
+    currentPrice: chart.currentPrice,
+    updatedAt: chart.updatedAt,
+  });
+  const message = ctx.callbackQuery?.message;
+  const canEditExistingPhoto =
+    Boolean(options?.forceRefresh) &&
+    Boolean(message && "photo" in message && Array.isArray(message.photo));
+
+  if (canEditExistingPhoto) {
+    try {
+      await ctx.editMessageMedia(
+        {
+          type: "photo",
+          media: photo,
+          caption,
+        },
+        {
+          reply_markup: buildBtcChartKeyboard(),
+        }
+      );
+      return;
+    } catch (error) {
+      console.warn("[chart] Failed to refresh BTC chart in place:", error);
+    }
+  }
+
+  await ctx.replyWithPhoto(photo, {
+    caption,
+    reply_markup: buildBtcChartKeyboard(),
+  });
 }
 
 async function renderArenaLobby(
@@ -1539,6 +1600,38 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
 
   if (data === START_LOBBY || data === LOBBY_REFRESH || data === ARENA_BACK_TO_LOBBY) {
     await openLobbyOrFundingPrompt(ctx, ctx.from.id);
+    return;
+  }
+
+  if (data === BTC_CHART_OPEN) {
+    await sendBtcChartMessage(ctx);
+    return;
+  }
+
+  if (data === BTC_CHART_REFRESH) {
+    await sendBtcChartMessage(ctx, { forceRefresh: true });
+    return;
+  }
+
+  if (data.startsWith(ARENA_TRADE_PREFIX)) {
+    try {
+      const prompt = await prepareFantasyTradePromptForArena({
+        telegramId: ctx.from.id,
+        code: data.slice(ARENA_TRADE_PREFIX.length),
+      });
+      const sent = await ctx.reply(prompt.text, {
+        reply_markup: prompt.keyboard,
+      });
+
+      registerFantasyTradePromptDelivery({
+        chatId: sent.chat.id,
+        messageId: sent.message_id,
+        telegramId: ctx.from.id,
+        state: prompt.state,
+      });
+    } catch (error) {
+      await replyArenaLookupError(ctx, error);
+    }
     return;
   }
 

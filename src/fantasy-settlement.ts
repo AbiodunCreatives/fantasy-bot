@@ -2,6 +2,7 @@ import { config } from "./config.ts";
 import {
   activateDueFantasyGames,
   finalizeFantasyGames,
+  sendFantasyRoundReengagements,
   settleFantasyLeagueTrades,
 } from "./fantasy-league.ts";
 import { getDelayUntilNextAlignedTick } from "./utils/aligned-interval.ts";
@@ -25,7 +26,8 @@ async function runFantasySettlementTick(): Promise<void> {
     }
 
     try {
-      await settleFantasyLeagueTrades();
+      const settledRounds = await settleFantasyLeagueTrades();
+      await sendFantasyRoundReengagements(settledRounds);
     } catch (error) {
       console.error("[fantasy-settlement] Settlement pass failed:", error);
     }

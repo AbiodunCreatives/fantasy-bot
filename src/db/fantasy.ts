@@ -29,6 +29,8 @@ export interface FantasyGameMember {
   entry_fee_paid: number;
   virtual_balance: number;
   total_trades: number;
+  last_traded_round: number | null;
+  consecutive_missed_rounds: number;
   wins: number;
   losses: number;
   prize_awarded: number;
@@ -136,6 +138,10 @@ function parseCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function parseOptionalCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function normalizeFantasyGame(row: FantasyGameRow): FantasyGame {
   return {
     ...row,
@@ -155,6 +161,8 @@ function normalizeFantasyMember(row: FantasyGameMemberRow): FantasyGameMember {
     virtual_balance: parseMoney(row.virtual_balance),
     prize_awarded: parseMoney(row.prize_awarded),
     total_trades: parseCount(row.total_trades),
+    last_traded_round: parseOptionalCount(row.last_traded_round),
+    consecutive_missed_rounds: parseCount(row.consecutive_missed_rounds),
     wins: parseCount(row.wins),
     losses: parseCount(row.losses),
     username: row.username ?? null,
@@ -681,6 +689,35 @@ export async function incrementFantasyMemberTradeCount(
 
   if (updateError) {
     throw updateError;
+  }
+}
+
+export async function updateFantasyMemberRoundTracking(input: {
+  memberId: string;
+  lastTradedRound?: number | null;
+  consecutiveMissedRounds?: number;
+}): Promise<void> {
+  const payload: Record<string, unknown> = {};
+
+  if (input.lastTradedRound !== undefined) {
+    payload.last_traded_round = input.lastTradedRound;
+  }
+
+  if (input.consecutiveMissedRounds !== undefined) {
+    payload.consecutive_missed_rounds = input.consecutiveMissedRounds;
+  }
+
+  if (Object.keys(payload).length === 0) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from("fantasy_game_members")
+    .update(payload)
+    .eq("id", input.memberId);
+
+  if (error) {
+    throw error;
   }
 }
 

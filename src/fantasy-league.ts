@@ -1,6 +1,7 @@
 import { Api, InlineKeyboard } from "grammy";
 
 import {
+  getCurrentRoundSnapshot,
   getEventPricing,
   getEvent,
   getNextRoundStart,
@@ -39,7 +40,9 @@ import {
   settleFantasyTrade,
   syncFantasyPrizeAwards,
   updateFantasyGame,
+  updateFantasyMemberRoundTracking,
   type FantasyGame,
+  type FantasyGameMember,
   type FantasyLeaderboardEntry,
   type FantasyTrade,
   type FantasyTradeDirection,
@@ -82,9 +85,12 @@ export const FANTASY_TRADE_AMOUNTS = [10, 25, 50, 100] as const;
 export const FANTASY_DEFAULT_DURATION_HOURS = 24;
 const FANTASY_JOIN_PENDING_TTL_SECONDS = 5 * 60;
 const FANTASY_TRADE_REF_TTL_SECONDS = 15 * 60;
-const FANTASY_MISSED_STREAK_ALERT = 3;
 const FANTASY_CUSTOM_FUND_TTL_SECONDS = 10 * 60;
 const FANTASY_NEXT_ROUND_REMINDER_TTL_SECONDS = 2 * 60 * 60;
+const BINANCE_BTC_PRICE_URL =
+  "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT";
+const BINANCE_BTC_PRICE_CACHE_TTL_MS = 10_000;
+const MIN_VALID_BTC_PRICE_USD = 1_000;
 
 interface FantasyTradeRefPayload {
   gameId: string;
@@ -115,6 +121,51 @@ function parseOptionalNumber(value: unknown): number | null {
   }
 
   return null;
+}
+
+function isUsableBtcPrice(value: number | null | undefined): value is number {
+  return Number.isFinite(value) && (value ?? 0) >= MIN_VALID_BTC_PRICE_USD;
+}
+
+async function getCachedBinanceBtcPrice(): Promise<number | null> {
+  const now = Date.now();
+
+  if (
+    cachedBinanceBtcPrice &&
+    now - cachedBinanceBtcPrice.fetchedAt < BINANCE_BTC_PRICE_CACHE_TTL_MS
+  ) {
+    return cachedBinanceBtcPrice.value;
+  }
+
+  try {
+    const response = await fetch(BINANCE_BTC_PRICE_URL, {
+      headers: { Accept: "application/json" },
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Binance API ${response.status}: ${text || response.statusText}`);
+    }
+
+    const payload = (await response.json()) as {
+      price?: unknown;
+    };
+    const parsedPrice = parseOptionalNumber(payload.price);
+
+    if (!isUsableBtcPrice(parsedPrice)) {
+      throw new Error(`Binance returned an invalid BTC price: ${String(payload.price)}`);
+    }
+
+    cachedBinanceBtcPrice = {
+      value: parsedPrice,
+      fetchedAt: now,
+    };
+
+    return parsedPrice;
+  } catch (error) {
+    console.warn("[fantasy] Failed to load BTC price from Binance:", error);
+    return null;
+  }
 }
 
 function getOutcomeIdForDirection(
@@ -196,11 +247,12 @@ export interface FantasyTradeStakeSelectionView {
   downPrice: number;
 }
 
-interface PromptState {
+export interface PromptState {
   game: FantasyGame;
   telegramId: number;
   messageId: number;
   chatId: number;
+  displayMode: "openAlert" | "livePrompt";
   memberCount: number;
   rank: number;
   virtualBalance: number;
@@ -216,8 +268,28 @@ interface PromptState {
   selectedStake: number | null;
 }
 
+export interface FantasyTradePromptPayload {
+  text: string;
+  keyboard: InlineKeyboard;
+  state: PromptState;
+}
+
+export interface FantasyRoundSettlementSummary {
+  game: FantasyGame;
+  leaderboard: FantasyLeaderboardEntry[];
+  roundNumber: number;
+  leaderGainPoints: number;
+}
+
 const activePromptStates = new Map<string, PromptState>();
 const activePromptTimers = new Map<string, NodeJS.Timeout>();
+const activeMidRoundNudges = new Map<string, NodeJS.Timeout>();
+let cachedBinanceBtcPrice:
+  | {
+      value: number;
+      fetchedAt: number;
+    }
+  | null = null;
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -283,16 +355,20 @@ function fantasyJoinPendingKey(telegramId: number): string {
   return `fantasy:join:pending:${telegramId}`;
 }
 
-function fantasyMissedStreakKey(gameId: string, telegramId: number): string {
-  return `fantasy:missed:${gameId}:${telegramId}`;
-}
-
 function fantasyCustomFundKey(telegramId: number): string {
   return `fantasy:fund:custom:${telegramId}`;
 }
 
 function fantasyRoundReminderKey(gameId: string, telegramId: number): string {
   return `fantasy:remind:${gameId}:${telegramId}`;
+}
+
+function fantasyMidRoundNudgeKey(
+  gameId: string,
+  eventId: string,
+  telegramId: number
+): string {
+  return `${gameId}:${eventId}:${telegramId}`;
 }
 
 function promptStateKey(chatId: number, messageId: number): string {
@@ -522,6 +598,12 @@ function buildFantasyTradeBuyKeyboard(input: {
     );
 }
 
+function buildRoundOpenAlertKeyboard(ref: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("UP 📈", buildFantasyTradeDirectionButtonData("UP", ref))
+    .text("DOWN 📉", buildFantasyTradeDirectionButtonData("DOWN", ref));
+}
+
 function buildFantasyTradeStakeKeyboard(input: {
   direction: FantasyTradeDirection;
   ref: string;
@@ -680,11 +762,11 @@ function buildClosedPromptText(state: PromptState): string {
 }
 
 function formatLiveRoundPromptBtcPrice(value: number | null): string {
-  if (!Number.isFinite(value)) {
-    return "N/A";
+  if (!isUsableBtcPrice(value)) {
+    return "price unavailable";
   }
 
-  return `$${(value ?? 0).toLocaleString("en-US", {
+  return `$${value.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -732,6 +814,24 @@ function buildLiveRoundQuestion(referencePrice: number | null): string {
   return `Will Bitcoin be above ${formatLiveRoundPromptBtcPrice(
     referencePrice
   )} when this round closes?`;
+}
+
+function buildRoundOpenAlertText(state: Pick<PromptState, "roundNumber" | "currentPrice">): string {
+  return [
+    `🔴 Round ${state.roundNumber} is live — BTC at ${formatLiveRoundPromptBtcPrice(state.currentPrice)}.`,
+    "You have 3 minutes to place your trade.",
+  ].join("\n");
+}
+
+function buildMidRoundNudgeText(roundNumber: number): string {
+  return [
+    `⏳ 7 minutes left in Round ${roundNumber}.`,
+    "You haven't placed a trade yet — you're leaving points on the table.",
+  ].join("\n");
+}
+
+function buildTradeNowKeyboard(gameCode: string): InlineKeyboard {
+  return new InlineKeyboard().text("Trade Now", `arena:trade:${gameCode}`);
 }
 
 function buildLiveRoundPromptText(state: PromptState): string {
@@ -815,17 +915,19 @@ async function refreshPromptMessage(key: string): Promise<void> {
     return;
   }
 
-  try {
-    await tgApi.editMessageText(
-      state.chatId,
-      state.messageId,
-      buildLiveRoundPromptText(state),
-      { reply_markup: buildRoundPromptKeyboard(state) }
-    );
-  } catch (error) {
-    console.warn("[fantasy] Failed to refresh prompt countdown:", error);
-    clearPromptState(key);
-    return;
+  if (state.displayMode === "livePrompt") {
+    try {
+      await tgApi.editMessageText(
+        state.chatId,
+        state.messageId,
+        buildLiveRoundPromptText(state),
+        { reply_markup: buildRoundPromptKeyboard(state) }
+      );
+    } catch (error) {
+      console.warn("[fantasy] Failed to refresh prompt countdown:", error);
+      clearPromptState(key);
+      return;
+    }
   }
 
   const msRemaining = Date.parse(state.closingDate) - Date.now();
@@ -856,7 +958,7 @@ function schedulePromptCountdown(state: PromptState): void {
 
   const timer = setTimeout(() => {
     void refreshPromptMessage(key);
-  }, Math.min(60_000, msRemaining));
+  }, state.displayMode === "openAlert" ? msRemaining : Math.min(60_000, msRemaining));
 
   activePromptTimers.set(key, timer);
 }
@@ -908,6 +1010,12 @@ async function buildTradeReference(input: {
 }
 
 async function getRoundCurrentPrice(pricing: RoundPricing): Promise<number | null> {
+  const binancePrice = await getCachedBinanceBtcPrice();
+
+  if (isUsableBtcPrice(binancePrice)) {
+    return binancePrice;
+  }
+
   const outcomeId = pricing.upOutcomeId ?? pricing.downOutcomeId;
 
   if (!outcomeId) {
@@ -923,10 +1031,11 @@ async function getRoundCurrentPrice(pricing: RoundPricing): Promise<number | nul
       currency: "USD",
     });
 
-    return parseOptionalNumber(quote?.currentMarketPrice);
+    const baysePrice = parseOptionalNumber(quote?.currentMarketPrice);
+    return isUsableBtcPrice(baysePrice) ? baysePrice : null;
   } catch (error) {
     console.warn(
-      `[fantasy] Failed to load current BTC price for ${pricing.eventId}:`,
+      `[fantasy] Failed to load fallback BTC price from Bayse for ${pricing.eventId}:`,
       error
     );
     return null;
@@ -964,6 +1073,70 @@ function inferResolvedDirection(payload: unknown): FantasyTradeDirection | null 
   }
 
   return null;
+}
+
+function extractEventWindow(payload: unknown): {
+  openingDate: string | null;
+  closingDate: string | null;
+} {
+  const record = payload as {
+    openingDate?: unknown;
+    closingDate?: unknown;
+  };
+
+  return {
+    openingDate:
+      typeof record.openingDate === "string" && record.openingDate.trim()
+        ? record.openingDate
+        : null,
+    closingDate:
+      typeof record.closingDate === "string" && record.closingDate.trim()
+        ? record.closingDate
+        : null,
+  };
+}
+
+async function getRoundClosePrice(closingDate: string | null): Promise<number | null> {
+  const closingMs = closingDate ? Date.parse(closingDate) : Number.NaN;
+
+  if (!Number.isFinite(closingMs)) {
+    return null;
+  }
+
+  const url = new URL("https://api.binance.com/api/v3/klines");
+  url.searchParams.set("symbol", "BTCUSDT");
+  url.searchParams.set("interval", "15m");
+  url.searchParams.set("limit", "1");
+  url.searchParams.set("endTime", String(Math.max(0, closingMs - 1)));
+
+  try {
+    const response = await fetch(url.toString(), {
+      headers: { Accept: "application/json" },
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Binance API ${response.status}: ${text || response.statusText}`);
+    }
+
+    const payload = (await response.json()) as unknown;
+
+    if (!Array.isArray(payload)) {
+      return null;
+    }
+
+    const candle = payload[0];
+
+    if (!Array.isArray(candle) || candle.length < 5) {
+      return null;
+    }
+
+    const closePrice = parseOptionalNumber(candle[4]);
+    return isUsableBtcPrice(closePrice) ? closePrice : null;
+  } catch (error) {
+    console.warn("[fantasy] Failed to load BTC round close price from Binance:", error);
+    return null;
+  }
 }
 
 function getPrizeSplits(playerCount: number): number[] {
@@ -1170,12 +1343,13 @@ function buildRoundBroadcastPayload(input: {
   memberCount: number;
   virtualBalance: number;
   ref: string;
-}): { text: string; keyboard: InlineKeyboard; state: PromptState } {
+}): FantasyTradePromptPayload {
   const state: PromptState = {
     game: input.game,
     telegramId: 0,
     messageId: 0,
     chatId: 0,
+    displayMode: "openAlert",
     memberCount: input.memberCount,
     rank: input.rank,
     virtualBalance: input.virtualBalance,
@@ -1192,10 +1366,100 @@ function buildRoundBroadcastPayload(input: {
   };
 
   return {
+    text: buildRoundOpenAlertText(state),
+    keyboard: buildRoundOpenAlertKeyboard(state.ref),
+    state,
+  };
+}
+
+function buildLivePromptPayload(state: PromptState): FantasyTradePromptPayload {
+  return {
     text: buildLiveRoundPromptText(state),
     keyboard: buildRoundPromptKeyboard(state),
     state,
   };
+}
+
+export async function prepareFantasyTradePromptForArena(input: {
+  telegramId: number;
+  code: string;
+}): Promise<FantasyTradePromptPayload> {
+  const game = await getFantasyGameByCode(input.code);
+
+  if (!game || game.status !== "active" || Date.parse(game.end_at) <= Date.now()) {
+    throw new Error("This league is not active right now.");
+  }
+
+  const member = await getFantasyGameMember(game.id, input.telegramId);
+
+  if (!member) {
+    throw new Error("You are not a member of this league.");
+  }
+
+  const snapshot = await getCurrentRoundSnapshot(FANTASY_ASSET);
+
+  if (!snapshot?.pricing || Date.parse(snapshot.round.closingDate) <= Date.now()) {
+    throw new Error("This fantasy round is no longer available.");
+  }
+
+  const leaderboard = await getFantasyLeaderboard(game.id);
+  const rank =
+    leaderboard.find((entry) => entry.telegram_id === input.telegramId)?.place ?? null;
+
+  if (rank === null) {
+    throw new Error("Unable to load your arena rank right now.");
+  }
+
+  const currentPrice = await getRoundCurrentPrice(snapshot.pricing);
+  const ref = await buildTradeReference({
+    gameId: game.id,
+    eventId: snapshot.pricing.eventId,
+    marketId: snapshot.pricing.marketId,
+    openingDate: snapshot.round.openingDate,
+    closingDate: snapshot.round.closingDate,
+    currentPrice,
+    referencePrice: snapshot.pricing.eventThreshold,
+    upPrice: snapshot.pricing.upPrice,
+    downPrice: snapshot.pricing.downPrice,
+    upOutcomeId: snapshot.pricing.upOutcomeId,
+    downOutcomeId: snapshot.pricing.downOutcomeId,
+  });
+  const state: PromptState = {
+    game,
+    telegramId: input.telegramId,
+    messageId: 0,
+    chatId: 0,
+    displayMode: "livePrompt",
+    memberCount: leaderboard.length,
+    rank,
+    virtualBalance: member.virtual_balance,
+    roundNumber: getGameRoundNumber(game, snapshot.round.openingDate),
+    closingDate: snapshot.round.closingDate,
+    currentPrice,
+    referencePrice: snapshot.pricing.eventThreshold,
+    upPrice: snapshot.pricing.upPrice,
+    downPrice: snapshot.pricing.downPrice,
+    ref,
+    stage: "direction",
+    selectedDirection: null,
+    selectedStake: null,
+  };
+
+  return buildLivePromptPayload(state);
+}
+
+export function registerFantasyTradePromptDelivery(input: {
+  chatId: number;
+  messageId: number;
+  telegramId: number;
+  state: PromptState;
+}): void {
+  schedulePromptCountdown({
+    ...input.state,
+    chatId: input.chatId,
+    messageId: input.messageId,
+    telegramId: input.telegramId,
+  });
 }
 
 function renderLeaderboardText(input: {
@@ -1349,6 +1613,32 @@ function renderRoundSettlementMessage(input: {
   return lines.join("\n");
 }
 
+function buildRoundCloseNotificationText(input: {
+  roundNumber: number;
+  closePrice: number | null;
+  resolvedDirection: FantasyTradeDirection;
+  trade: FantasyTrade | null;
+  virtualBalance: number;
+  rank: number;
+  totalParticipants: number;
+}): string {
+  const tradeLine =
+    input.trade === null
+      ? "No trade placed this round."
+      : input.trade.outcome === "WIN"
+        ? `Your trade: ${input.trade.direction} won.`
+        : `Your trade: ${input.trade.direction} lost.`;
+
+  return [
+    `Round ${input.roundNumber} closed. BTC finished at ${formatLiveRoundPromptBtcPrice(
+      input.closePrice
+    )} — ${input.resolvedDirection} wins.`,
+    tradeLine,
+    `Your balance: ${formatWholeMoney(input.virtualBalance)} virtual USDC`,
+    `Current rank: ${input.rank} of ${input.totalParticipants}`,
+  ].join("\n");
+}
+
 export function getVirtualStartBalance(entryFee: number): number {
   return roundMoney(entryFee * FANTASY_ENTRY_MULTIPLIER);
 }
@@ -1481,11 +1771,13 @@ export async function buildFantasyTradeStakeSelection(input: {
 
   if (promptState) {
     promptState.state.stage = "stake";
+    promptState.state.displayMode = "livePrompt";
     promptState.state.currentPrice = selection.currentPrice;
     promptState.state.referencePrice = selection.referencePrice;
     promptState.state.selectedDirection = direction;
     promptState.state.selectedStake = null;
     promptState.state.telegramId = input.telegramId;
+    schedulePromptCountdown(promptState.state);
 
     return {
       text: buildLiveRoundPromptText(promptState.state),
@@ -1693,6 +1985,55 @@ export async function activateDueFantasyGames(): Promise<void> {
   }
 }
 
+function scheduleMidRoundNudge(input: {
+  game: FantasyGame;
+  member: FantasyGameMember;
+  eventId: string;
+  roundNumber: number;
+  delayMs: number;
+}): void {
+  const key = fantasyMidRoundNudgeKey(
+    input.game.id,
+    input.eventId,
+    input.member.telegram_id
+  );
+  const existingTimer = activeMidRoundNudges.get(key);
+
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(() => {
+    activeMidRoundNudges.delete(key);
+    void (async () => {
+      try {
+        const existingTrade = await getFantasyTradeForMemberEvent(
+          input.game.id,
+          input.member.id,
+          input.eventId
+        );
+
+        if (existingTrade) {
+          return;
+        }
+
+        await safeSendMessage(
+          input.member.telegram_id,
+          buildMidRoundNudgeText(input.roundNumber),
+          buildTradeNowKeyboard(input.game.code)
+        );
+      } catch (error) {
+        console.warn(
+          `[fantasy] Failed to send mid-round nudge for arena ${input.game.code}:`,
+          error
+        );
+      }
+    })();
+  }, Math.max(0, input.delayMs));
+
+  activeMidRoundNudges.set(key, timer);
+}
+
 export async function processFantasyLeagueRound(
   round: Round,
   pricing: RoundPricing
@@ -1724,6 +2065,11 @@ export async function processFantasyLeagueRound(
       upOutcomeId: pricing.upOutcomeId,
       downOutcomeId: pricing.downOutcomeId,
     });
+    const roundNumber = getGameRoundNumber(game, round.openingDate);
+    const midRoundDelayMs = Math.max(
+      0,
+      Math.floor((Date.parse(round.closingDate) - Date.parse(round.openingDate)) / 2)
+    );
 
     const deliveryResults = await Promise.all(
       members.map(async (member) => {
@@ -1734,6 +2080,14 @@ export async function processFantasyLeagueRound(
         if (rank === null) {
           return false;
         }
+
+        scheduleMidRoundNudge({
+          game,
+          member,
+          eventId: pricing.eventId,
+          roundNumber,
+          delayMs: midRoundDelayMs,
+        });
 
         const prompt = buildRoundBroadcastPayload({
           game,
@@ -1919,6 +2273,17 @@ export async function placeFantasyTradeFromCallbackData(input: {
     throw error;
   }
 
+  await updateFantasyMemberRoundTracking({
+    memberId: member.id,
+    lastTradedRound: getGameRoundNumber(game, payload.openingDate),
+    consecutiveMissedRounds: 0,
+  }).catch((error) => {
+    console.warn(
+      `[fantasy] Failed to update round tracking for ${member.telegram_id}:`,
+      error
+    );
+  });
+
   const refreshedMember = await getFantasyGameMember(game.id, input.telegramId);
 
   return {
@@ -1935,9 +2300,10 @@ export async function placeFantasyTradeFromCallbackData(input: {
   };
 }
 
-export async function settleFantasyLeagueTrades(): Promise<void> {
+export async function settleFantasyLeagueTrades(): Promise<FantasyRoundSettlementSummary[]> {
   const pendingTrades = await listPendingFantasyTrades();
-  const eventCache = new Map<string, FantasyTradeDirection | null>();
+  const settledRounds: FantasyRoundSettlementSummary[] = [];
+  const eventCache = new Map<string, unknown>();
   const tradesByRound = new Map<string, FantasyTrade[]>();
 
   for (const trade of pendingTrades) {
@@ -1955,17 +2321,19 @@ export async function settleFantasyLeagueTrades(): Promise<void> {
     }
 
     try {
-      let resolvedDirection = eventCache.get(trade.event_id);
+      let eventPayload = eventCache.get(trade.event_id);
 
-      if (resolvedDirection === undefined) {
-        const event = await getEvent(trade.event_id);
-        resolvedDirection = inferResolvedDirection(event);
-        eventCache.set(trade.event_id, resolvedDirection);
+      if (eventPayload === undefined) {
+        eventPayload = await getEvent(trade.event_id);
+        eventCache.set(trade.event_id, eventPayload);
       }
+
+      const resolvedDirection = inferResolvedDirection(eventPayload);
 
       if (!resolvedDirection) {
         continue;
       }
+      const eventWindow = extractEventWindow(eventPayload);
 
       const game = await getFantasyGameById(trade.game_id);
 
@@ -2038,103 +2406,124 @@ export async function settleFantasyLeagueTrades(): Promise<void> {
 
       const members = await listFantasyGameMembers(game.id);
       const refreshedLeaderboard = await getFantasyLeaderboard(game.id);
-      const roundNumber = getGameRoundNumber(game, trade.created_at);
-      const refreshedRanks = new Map(
-        refreshedLeaderboard.map((entry) => [entry.telegram_id, entry.place] as const)
+      const roundNumber = getGameRoundNumber(
+        game,
+        eventWindow.openingDate ?? trade.created_at
       );
+      const closePrice = await getRoundClosePrice(eventWindow.closingDate);
       const tradesByMemberId = new Map(
         allTradesForRound.map((entry) => [entry.member_id, entry] as const)
       );
+      const leaderboardRanks = new Map(
+        refreshedLeaderboard.map((entry) => [entry.telegram_id, entry.place] as const)
+      );
+      const leader = refreshedLeaderboard[0] ?? null;
+      const leaderGainPoints = leader
+        ? Math.max(
+            0,
+            Math.round(
+              leader.virtual_balance -
+                (previousBalances.get(leader.telegram_id) ?? leader.virtual_balance)
+            )
+          )
+        : 0;
 
       await Promise.all(
         members.map(async (member) => {
           const tradeForMember = tradesByMemberId.get(member.id) ?? null;
-          const previousBalance =
-            tradeForMember && tradeForMember.outcome === "LOSS"
-              ? roundMoney(
-                  (previousBalances.get(member.telegram_id) ?? member.virtual_balance) +
-                    tradeForMember.stake
-                )
-              : previousBalances.get(member.telegram_id) ?? member.virtual_balance;
-          const nextLeader =
-            refreshedLeaderboard[0] &&
-            refreshedLeaderboard[0].telegram_id !== member.telegram_id
-              ? anonymizePlayer(refreshedLeaderboard[0].telegram_id, member.telegram_id)
-              : null;
-          const keyboard = new InlineKeyboard().text(
-            "View leaderboard",
-            `arena:board:${game.code}`
-          );
+          const rank =
+            leaderboardRanks.get(member.telegram_id) ?? refreshedLeaderboard.length;
+          const nextMissedRounds = tradeForMember
+            ? 0
+            : member.consecutive_missed_rounds + 1;
 
-          if (!tradeForMember) {
-            keyboard.text("Don't miss the next round", `arena:remind:${game.code}`);
-          }
+          await updateFantasyMemberRoundTracking({
+            memberId: member.id,
+            lastTradedRound: tradeForMember ? roundNumber : member.last_traded_round,
+            consecutiveMissedRounds: nextMissedRounds,
+          }).catch((error) => {
+            console.warn(
+              `[fantasy] Failed to update settlement round tracking for ${member.telegram_id}:`,
+              error
+            );
+          });
 
           await safeSendMessage(
             member.telegram_id,
-            renderRoundSettlementMessage({
-              game,
+            buildRoundCloseNotificationText({
               roundNumber,
+              closePrice,
               resolvedDirection,
               trade: tradeForMember,
-              previousRank: previousRanks.get(member.telegram_id) ?? null,
-              nextRank:
-                refreshedRanks.get(member.telegram_id) ?? refreshedLeaderboard.length,
-              nextLeaderName: nextLeader,
-              previousBalance,
               virtualBalance: member.virtual_balance,
-              prizeIfEndedNow: getProjectedPrizeForUser(
-                refreshedLeaderboard,
-                game.prize_pool,
-                member.telegram_id
-              ),
+              rank,
+              totalParticipants: refreshedLeaderboard.length,
             }),
-            keyboard
+            new InlineKeyboard().text("View leaderboard", `arena:board:${game.code}`)
           );
-
-          const missedKey = fantasyMissedStreakKey(game.id, member.telegram_id);
-
-          if (tradeForMember) {
-            await redis.del(missedKey);
-            return;
-          }
-
-          const streak = await redis.incr(missedKey);
-
-          if (streak === 1) {
-            await redis.expire(
-              missedKey,
-              Math.max(
-                60,
-                Math.ceil(
-                  (Date.parse(game.end_at) - Date.parse(game.start_at)) / 1000
-                )
-              )
-            );
-          }
-
-          if (streak === FANTASY_MISSED_STREAK_ALERT) {
-            await safeSendMessage(
-              member.telegram_id,
-              [
-                "You've sat out 3 rounds in a row.",
-                "",
-                nextLeader
-                  ? `You're still in it, but ${nextLeader} is pulling away.`
-                  : "You're still in it.",
-                "",
-                "Next round opens soon. I'll ping you.",
-              ].join("\n")
-            );
-          }
         })
       );
+
+      settledRounds.push({
+        game,
+        leaderboard: refreshedLeaderboard,
+        roundNumber,
+        leaderGainPoints,
+      });
     } catch (error) {
       console.error(
         `[fantasy] Failed to settle fantasy round ${roundKey}:`,
         error
       );
     }
+  }
+
+  return settledRounds;
+}
+
+export async function sendFantasyRoundReengagements(
+  settledRounds: FantasyRoundSettlementSummary[]
+): Promise<void> {
+  for (const settledRound of settledRounds) {
+    if (Date.parse(settledRound.game.end_at) <= Date.now()) {
+      continue;
+    }
+
+    const leader = settledRound.leaderboard[0] ?? null;
+    const members = await listFantasyGameMembers(settledRound.game.id);
+    const timeRemaining = formatCompactDuration(
+      Math.max(0, Date.parse(settledRound.game.end_at) - Date.now())
+    );
+
+    await Promise.all(
+      members.map(async (member) => {
+        if (member.consecutive_missed_rounds !== 2) {
+          return;
+        }
+
+        const rank =
+          settledRound.leaderboard.find(
+            (entry) => entry.telegram_id === member.telegram_id
+          )?.place ?? settledRound.leaderboard.length;
+        const currentGap = leader
+          ? Math.max(0, Math.round(leader.virtual_balance - member.virtual_balance))
+          : 0;
+        const pointsGap =
+          settledRound.leaderGainPoints > 0
+            ? settledRound.leaderGainPoints
+            : currentGap;
+
+        await safeSendMessage(
+          member.telegram_id,
+          [
+            `You're in ${rank} place but haven't traded in 2 rounds.`,
+            `The leader just gained ${pointsGap.toLocaleString("en-US")} points.`,
+            `Arena closes in ${timeRemaining}.`,
+          ].join("\n"),
+          buildTradeNowKeyboard(settledRound.game.code)
+        );
+      })
+    );
   }
 }
 
