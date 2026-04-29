@@ -5,3 +5,7 @@ dist/
 !.env.example
 *.log
 src/bot/handlers/Untitled-1.txt
+.superstack/
+codex-session.jsonl
+claude-session.jsonl
+superteam-agentic-engineering-grant-draft.md

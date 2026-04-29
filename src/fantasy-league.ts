@@ -2191,21 +2191,12 @@ export async function finalizeFantasyGames(): Promise<void> {
           telegramId: award.telegramId,
           place: award.place,
           amount,
+          referenceId: game.code,
         });
 
         if (!awarded) {
           continue;
         }
-
-        await creditBalance(award.telegramId, amount, {
-          reason: "fantasy_prize",
-          referenceType: "fantasy_game",
-          referenceId: game.code,
-          metadata: {
-            place: award.place,
-            amount,
-          },
-        });
       } catch (error) {
         payoutFailed = true;
         await revokeFantasyPrize({
@@ -2319,6 +2310,6 @@ export async function getFantasyLeagueJoinSummary(
     `Starts: ${formatMediumDateTime(game.start_at)}`,
     `Ends: ${formatMediumDateTime(game.end_at)}`,
     "",
-    "Private beta wallets are virtual only. Joining is final for this test round.",
+    "Arena play stays virtual during the game, but funding and payouts use your in-bot Solana USDC balance.",
   ].join("\n");
 }

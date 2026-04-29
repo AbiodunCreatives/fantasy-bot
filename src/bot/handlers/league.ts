@@ -1,5 +1,6 @@
 import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
+import { PublicKey } from "@solana/web3.js";
 
 import { getCurrentRoundSnapshot } from "../../bayse-market.ts";
 import { config } from "../../config.ts";
@@ -8,13 +9,11 @@ import {
   buildFantasyTradeStakeSelection,
   clearFantasyTradePromptState,
   clearPendingFantasyLeagueJoin,
-  clearPendingFantasyCustomFundAmount,
   createFantasyLeagueGame,
   getFantasyLeagueStatusView,
   getFantasyLeagueBoardText,
   getFantasyLeagueDetailsByCode,
   getFantasyLeagueJoinPreview,
-  hasPendingFantasyCustomFundAmount,
   joinFantasyLeagueGame,
   listFantasyArenaLobby,
   listFantasyLeagueSnapshots,
@@ -42,9 +41,16 @@ import {
   getApproxRoundsUntil,
   getRoundsForDurationHours,
 } from "../../fantasy-ui.ts";
+import {
+  getFantasyWalletSummary,
+  processFantasyWalletWithdrawals,
+  requestFantasyWalletWithdrawal,
+  syncFantasyWalletDeposits,
+} from "../../solana-wallet.ts";
 
 const START_HOW_IT_WORKS = "start:how";
 const START_LOBBY = "start:lobby";
+const START_WALLET = "start:wallet";
 const LOBBY_REFRESH = "lobby:refresh";
 const LOBBY_LIVE = "lobby:live";
 const ARENA_CREATE = "arena:create";
@@ -59,6 +65,10 @@ const ARENA_JOIN_DECLINE = "fantasy:join:decline";
 const FUNDS_ADD = "funds:add";
 const FUNDS_CUSTOM = "funds:custom";
 const FUNDS_BACK_TO_LOBBY = "funds:lobby";
+const WALLET_OPEN = "wallet:open";
+const WALLET_REFRESH = "wallet:refresh";
+const WALLET_WITHDRAW_HELP = "wallet:withdraw";
+const WALLET_BACK = "wallet:back";
 
 type FantasyLeagueStatusViewData = Awaited<
   ReturnType<typeof getFantasyLeagueStatusView>
@@ -79,11 +89,31 @@ function formatMoney(
   })}`;
 }
 
-function formatStarterBalance(): string {
-  return formatMoney(config.VIRTUAL_WALLET_START_BALANCE, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  });
+function formatUsdc(value: number): string {
+  const rounded = Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
+  const minimumFractionDigits = Number.isInteger(rounded) ? 0 : 2;
+
+  return `${rounded.toLocaleString("en-US", {
+    minimumFractionDigits,
+    maximumFractionDigits: 6,
+  })} USDC`;
+}
+
+function abbreviateAddress(value: string): string {
+  if (value.length <= 12) {
+    return value;
+  }
+
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function isValidSolanaAddress(value: string): boolean {
+  try {
+    void new PublicKey(value.trim());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function formatDateTime(value: string): string {
@@ -119,12 +149,12 @@ function buildArenaInsufficientBalanceText(
   balance: number
 ): string {
   return [
-    "Insufficient play balance.",
+    "Insufficient USDC balance.",
     "",
     `You need ${formatMoney(entryFee)} available for this arena entry.`,
-    `Your play balance: ${formatMoney(balance)}`,
+    `Your wallet balance: ${formatUsdc(balance)}`,
     "",
-    `Private beta wallets start at ${formatStarterBalance()} and manual top-ups are off for now.`,
+    "Deposit USDC on Solana into your in-bot wallet, then try again.",
   ].join("\n");
 }
 
@@ -132,8 +162,8 @@ function buildStartWelcomeText(): string {
   return [
     "Bayse Arena",
     "",
-    "BTC fantasy trading for the private beta.",
-    `Every tester starts with ${formatStarterBalance()} in play-money credits.`,
+    "BTC fantasy trading with Solana USDC funding.",
+    "Each user gets a separate in-bot Solana wallet for deposits and withdrawals.",
   ].join("\n");
 }
 
@@ -145,10 +175,11 @@ function buildStartWelcomeKeyboard(): InlineKeyboard {
 
 function buildHowItWorksText(): string {
   return [
-    `1. Every tester starts with ${formatStarterBalance()} in a beta wallet`,
-    "2. Arena entry fees ($1-$10) come from that play-money balance",
-    "3. Your arena stack is still entry fee x 100 for trading",
-    "4. Top bankroll wins the virtual prize pool",
+    "1. Open /wallet to get your personal Solana USDC deposit address",
+    "2. Deposit USDC on Solana and wait for the bot to credit your balance",
+    "3. Arena entry fees ($1-$10) come from that in-bot USDC balance",
+    "4. Your arena stack is still entry fee x 100 for trading",
+    "5. Winnings land back in your in-bot balance and can be withdrawn to any Solana wallet",
   ].join("\n");
 }
 
@@ -163,13 +194,21 @@ function buildStartOnboardingText(input: {
   return [
     `Welcome, ${input.firstName}.`,
     "",
-    "Bayse Arena is running in private beta with play-money only.",
-    `Beta wallet: ${formatMoney(input.balance)}`,
-    `Starter balance for new testers: ${formatStarterBalance()}`,
+    "Bayse Arena uses Solana USDC for entry, prizes, and withdrawals.",
+    `Available balance: ${formatUsdc(input.balance)}`,
+    "Open Wallet to view your personal deposit address.",
   ].join("\n");
 }
 
 function buildStartOnboardingKeyboard(): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+    .text("Browse Arenas", START_LOBBY)
+    .text("Wallet", START_WALLET)
+    .row()
+    .text("+ Create Arena", ARENA_CREATE);
+
+  return keyboard;
+
   return new InlineKeyboard()
     .text("🏟 Browse Arenas", START_LOBBY)
     .text("+ Create Arena", ARENA_CREATE);
@@ -181,7 +220,7 @@ function buildCreateArenaPickerText(balance: number): string {
     "",
     "Pick an entry fee:",
     "",
-    `Beta wallet: ${formatMoney(balance)}`,
+    `Available balance: ${formatUsdc(balance)}`,
   ].join("\n");
 }
 
@@ -210,7 +249,7 @@ function buildCreateArenaDurationText(input: {
     "Pick how long the arena should run:",
     "Bayse runs 4 rounds every hour.",
     "",
-    `Beta wallet: ${formatMoney(input.balance)}`,
+    `Available balance: ${formatUsdc(input.balance)}`,
   ].join("\n");
 }
 
@@ -506,42 +545,42 @@ function buildFantasyJoinSuccessText(input: {
     input.roundsUntilStart <= 0
       ? "Starts in: next BTC round"
       : `Starts in: ~${input.roundsUntilStart * 15} min`,
-    `Beta wallet: ${formatMoney(input.playBalance)}`,
+    `Wallet balance: ${formatUsdc(input.playBalance)}`,
     "I'll ping you when round 1 opens.",
   ].join("\n");
 }
 
 function buildInsufficientBalanceWithOptionsText(balance: number): string {
   return [
-    "You do not have enough beta balance to join this arena.",
+    "You do not have enough USDC to join this arena.",
     "",
-    `Beta wallet: ${formatMoney(balance)}`,
+    `Wallet balance: ${formatUsdc(balance)}`,
   ].join("\n");
 }
 
 function buildInsufficientBalanceKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Beta wallet", FUNDS_ADD)
+    .text("Open wallet", WALLET_OPEN)
     .text("Watch live arena", LOBBY_LIVE);
 }
 
 function buildCreateInsufficientKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Beta wallet", FUNDS_ADD)
+    .text("Open wallet", WALLET_OPEN)
     .text("Pick a lower fee", ARENA_CREATE);
 }
 
 function buildAddFundsText(): string {
   return [
-    `Private beta wallets are fixed at ${formatStarterBalance()}.`,
-    "Manual deposits and top-ups are disabled during the test window.",
+    "Open /wallet to view your Solana USDC deposit address.",
+    "Deposits credit your in-bot balance and withdrawals pay out to any Solana wallet.",
   ].join("\n");
 }
 
 function buildAddFundsKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Browse arenas", FUNDS_BACK_TO_LOBBY)
-    .text("Watch live", LOBBY_LIVE);
+    .text("Open wallet", WALLET_OPEN)
+    .text("Browse arenas", FUNDS_BACK_TO_LOBBY);
 }
 
 function buildCustomFundsPromptText(): string {
@@ -550,14 +589,95 @@ function buildCustomFundsPromptText(): string {
 
 function buildFundsAddedText(amount: number, balance: number): string {
   return [
-    buildAddFundsText(),
+    `Wallet balance: ${formatUsdc(balance)}`,
     "",
-    `Beta wallet: ${formatMoney(balance)}`,
+    "Your deposit has been credited.",
   ].join("\n");
 }
 
 function buildFundsAddedKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text("🏟 Browse Arenas", START_LOBBY);
+}
+
+function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSummary>>): string {
+  const ledgerLines =
+    summary.recentLedger.length === 0
+      ? ["No wallet activity yet."]
+      : summary.recentLedger.slice(0, 4).map((entry) => {
+          const sign = entry.direction === "credit" ? "+" : "-";
+          const label =
+            entry.entry_type === "deposit"
+              ? "Deposit"
+              : entry.entry_type === "arena_entry"
+                ? "Arena entry"
+                : entry.entry_type === "fantasy_prize"
+                  ? "Prize"
+                  : entry.entry_type === "withdrawal_request"
+                    ? "Withdrawal"
+                    : entry.entry_type.replace(/_/g, " ");
+
+          return `${sign}${formatUsdc(entry.amount)}  ${label}`;
+        });
+  const withdrawalLines =
+    summary.recentWithdrawals.length === 0
+      ? ["No withdrawals yet."]
+      : summary.recentWithdrawals.slice(0, 3).map((entry) => {
+          const destination = abbreviateAddress(entry.destination_address);
+          return `${entry.status.toUpperCase()}  ${formatUsdc(entry.amount)}  ->  ${destination}`;
+        });
+
+  return [
+    "Solana USDC Wallet",
+    "",
+    `Available balance: ${formatUsdc(summary.balance)}`,
+    "Network: Solana",
+    "",
+    "Deposit address:",
+    summary.wallet.owner_address,
+    "",
+    "Send only native USDC on Solana to this address.",
+    "Arena entries debit this balance. Winnings return here.",
+    "",
+    "Recent activity:",
+    ...ledgerLines,
+    "",
+    "Recent withdrawals:",
+    ...withdrawalLines,
+  ].join("\n");
+}
+
+function buildWalletKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("Refresh deposits", WALLET_REFRESH)
+    .text("Withdraw help", WALLET_WITHDRAW_HELP)
+    .row()
+    .text("Browse arenas", WALLET_BACK);
+}
+
+function buildWalletWithdrawHelpText(): string {
+  return [
+    "Withdraw USDC",
+    "",
+    `Use: /wallet withdraw <amount> <solana_address>`,
+    `Minimum: ${formatUsdc(config.SOLANA_WITHDRAW_MIN_AMOUNT)}`,
+    "",
+    "Example:",
+    "/wallet withdraw 5 FILL_IN_SOLANA_ADDRESS",
+  ].join("\n");
+}
+
+function buildWalletWithdrawalRequestedText(input: {
+  amount: number;
+  destinationAddress: string;
+}): string {
+  return [
+    "Withdrawal requested.",
+    "",
+    `Amount: ${formatUsdc(input.amount)}`,
+    `Destination: ${input.destinationAddress}`,
+    "",
+    "The bot will broadcast the Solana transfer shortly.",
+  ].join("\n");
 }
 
 function buildCatchUpText(input: {
@@ -658,6 +778,8 @@ function buildLeagueHelpText(): string {
     "",
     "Commands:",
     "/start - Open the welcome screen and lobby",
+    "/wallet - View your Solana USDC wallet and deposit address",
+    "/wallet withdraw 5 ADDRESS - Withdraw USDC to a Solana wallet",
     "/league - See your active arenas or browse the lobby",
     "/league create 5 12 - Create a 12h BTC fantasy arena with $5 entry",
     "/league join ABC123 - Review and join an arena by code",
@@ -674,10 +796,10 @@ function buildLeagueHelpText(): string {
     "- Bot keeps 8% commission when the league closes",
     "- Top finishers split the prize pool",
     "- Joining is final",
-    `- Private beta wallet: ${formatStarterBalance()} per tester`,
-    "- Manual deposits and top-ups are disabled during beta",
+    "- Deposits and withdrawals use Solana USDC",
+    "- Arena entries debit your in-bot USDC balance",
     "",
-    "All balances in this bot are virtual and live in this project's Supabase.",
+    "Arena balances stay virtual during play, but funding and payouts are real USDC.",
   ].join("\n");
 }
 
@@ -935,6 +1057,29 @@ async function renderArenaLobby(
       joinedCodes,
       liveOnly: options?.liveOnly,
     })
+  );
+}
+
+async function renderWalletView(
+  ctx: Context,
+  telegramId: number,
+  options?: { refresh?: boolean }
+): Promise<void> {
+  const initial = await getFantasyWalletSummary(telegramId);
+
+  if (options?.refresh) {
+    await syncFantasyWalletDeposits(initial.wallet);
+    await processFantasyWalletWithdrawals();
+  }
+
+  const summary = options?.refresh
+    ? await getFantasyWalletSummary(telegramId)
+    : initial;
+
+  await editTradePromptMessage(
+    ctx,
+    buildWalletText(summary),
+    buildWalletKeyboard()
   );
 }
 
@@ -1387,6 +1532,11 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
     return;
   }
 
+  if (data === START_WALLET || data === WALLET_OPEN) {
+    await renderWalletView(ctx, ctx.from.id, { refresh: true });
+    return;
+  }
+
   if (data === START_LOBBY || data === LOBBY_REFRESH || data === ARENA_BACK_TO_LOBBY) {
     await openLobbyOrFundingPrompt(ctx, ctx.from.id);
     return;
@@ -1398,34 +1548,27 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
   }
 
   if (data === FUNDS_ADD) {
-    await clearPendingFantasyCustomFundAmount(ctx.from.id);
-    await editTradePromptMessage(ctx, buildAddFundsText(), buildAddFundsKeyboard());
+    await renderWalletView(ctx, ctx.from.id, { refresh: true });
     return;
   }
 
   if (data === FUNDS_CUSTOM) {
-    await clearPendingFantasyCustomFundAmount(ctx.from.id);
-    await editTradePromptMessage(
-      ctx,
-      buildAddFundsText(),
-      buildAddFundsKeyboard()
-    );
+    await editTradePromptMessage(ctx, buildWalletWithdrawHelpText(), buildWalletKeyboard());
     return;
   }
 
-  if (data === FUNDS_BACK_TO_LOBBY) {
-    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+  if (data === FUNDS_BACK_TO_LOBBY || data === WALLET_BACK) {
     await openLobbyOrFundingPrompt(ctx, ctx.from.id);
     return;
   }
 
-  if (data.startsWith("funds:amount:")) {
-    await clearPendingFantasyCustomFundAmount(ctx.from.id);
-    await editTradePromptMessage(
-      ctx,
-      buildAddFundsText(),
-      buildAddFundsKeyboard()
-    );
+  if (data === WALLET_REFRESH || data.startsWith("funds:amount:")) {
+    await renderWalletView(ctx, ctx.from.id, { refresh: true });
+    return;
+  }
+
+  if (data === WALLET_WITHDRAW_HELP) {
+    await editTradePromptMessage(ctx, buildWalletWithdrawHelpText(), buildWalletKeyboard());
     return;
   }
 
@@ -1551,27 +1694,76 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
 }
 
 export async function handleFantasyTextInput(ctx: Context): Promise<boolean> {
+  void ctx;
+  return false;
+}
+
+export async function handleWallet(ctx: Context): Promise<void> {
   if (!ctx.from) {
-    return false;
+    return;
   }
 
-  const text = ctx.message?.text?.trim();
+  const args = (ctx.message?.text ?? "").split(/\s+/).slice(1);
+  const subcommand = args[0]?.toLowerCase();
 
-  if (!text || text.startsWith("/")) {
-    return false;
+  if (!subcommand || subcommand === "address" || subcommand === "refresh") {
+    await renderWalletView(ctx, ctx.from.id, { refresh: true });
+    return;
   }
 
-  const waitingForAmount = await hasPendingFantasyCustomFundAmount(ctx.from.id);
+  if (subcommand === "withdraw") {
+    const amount = Number.parseFloat(args[1] ?? "");
+    const destinationAddress = args[2]?.trim() ?? "";
 
-  if (!waitingForAmount) {
-    return false;
+    if (!Number.isFinite(amount) || amount <= 0 || !destinationAddress) {
+      await ctx.reply(buildWalletWithdrawHelpText(), {
+        reply_markup: buildWalletKeyboard(),
+      });
+      return;
+    }
+
+    if (!isValidSolanaAddress(destinationAddress)) {
+      await ctx.reply("That Solana address looks invalid. Please check it and try again.");
+      return;
+    }
+
+    try {
+      await requestFantasyWalletWithdrawal({
+        telegramId: ctx.from.id,
+        destinationAddress,
+        amount,
+      });
+      await processFantasyWalletWithdrawals();
+      await ctx.reply(
+        buildWalletWithdrawalRequestedText({
+          amount,
+          destinationAddress,
+        }),
+        {
+          reply_markup: buildWalletKeyboard(),
+        }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Something went wrong.";
+      const normalized = message.toLowerCase();
+
+      if (normalized.includes("insufficient wallet balance")) {
+        const balance = await getBalance(ctx.from.id);
+        await ctx.reply(buildArenaInsufficientBalanceText(amount, balance), {
+          reply_markup: buildInsufficientBalanceKeyboard(),
+        });
+        return;
+      }
+
+      await ctx.reply(message);
+    }
+
+    return;
   }
 
-  await clearPendingFantasyCustomFundAmount(ctx.from.id);
-  await ctx.reply(buildAddFundsText(), {
-    reply_markup: buildFundsAddedKeyboard(),
+  await ctx.reply(buildWalletWithdrawHelpText(), {
+    reply_markup: buildWalletKeyboard(),
   });
-  return true;
 }
 
 export async function handleLeague(ctx: Context): Promise<void> {

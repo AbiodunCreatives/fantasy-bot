@@ -8,13 +8,15 @@ interface FantasyUserBalanceRow {
 
 export interface BalanceChangeOptions {
   reason?: string;
+  entryType?: string;
   referenceType?: string | null;
   referenceId?: string | null;
+  idempotencyKey?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
 function roundMoney(value: number): number {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
+  return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
 
 function parseBalance(value: number | string | null | undefined): number {
@@ -25,6 +27,28 @@ function parseBalance(value: number | string | null | undefined): number {
   if (typeof value === "string") {
     const parsed = Number.parseFloat(value);
     return Number.isFinite(parsed) ? roundMoney(parsed) : 0;
+  }
+
+  return 0;
+}
+
+function getEntryType(options?: BalanceChangeOptions): string {
+  const value = options?.entryType ?? options?.reason ?? "adjustment";
+  return value.trim() || "adjustment";
+}
+
+function extractRpcBalance(data: unknown): number {
+  if (typeof data === "number" || typeof data === "string") {
+    return parseBalance(data);
+  }
+
+  if (Array.isArray(data)) {
+    return extractRpcBalance(data[0]);
+  }
+
+  if (data && typeof data === "object") {
+    const row = data as Record<string, unknown>;
+    return extractRpcBalance(row["wallet_balance"] ?? row["balance_after"]);
   }
 
   return 0;
@@ -53,7 +77,6 @@ async function applyBalanceDelta(input: {
   options?: BalanceChangeOptions;
 }): Promise<{
   success: boolean;
-  balanceBefore: number;
   balanceAfter: number;
 }> {
   const normalizedDelta = roundMoney(input.delta);
@@ -64,43 +87,34 @@ async function applyBalanceDelta(input: {
 
   await upsertUserProfile(input.telegramId);
 
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const row = await getFantasyUserRow(String(input.telegramId));
-    const balanceBefore = parseBalance(row?.wallet_balance);
-    const balanceAfter = roundMoney(balanceBefore + normalizedDelta);
+  const { data, error } = await supabase.rpc("apply_wallet_balance_change", {
+    p_telegram_id: input.telegramId,
+    p_delta: normalizedDelta,
+    p_allow_negative: input.allowNegative,
+    p_entry_type: getEntryType(input.options),
+    p_reference_type: input.options?.referenceType ?? null,
+    p_reference_id: input.options?.referenceId ?? null,
+    p_idempotency_key: input.options?.idempotencyKey ?? null,
+    p_metadata: input.options?.metadata ?? {},
+  });
 
-    if (!input.allowNegative && balanceAfter < 0) {
+  if (error) {
+    const message = error.message.toLowerCase();
+
+    if (message.includes("insufficient wallet balance")) {
       return {
         success: false,
-        balanceBefore,
-        balanceAfter: balanceBefore,
+        balanceAfter: await getBalance(input.telegramId),
       };
     }
 
-    const { data, error } = await supabase
-      .from("fantasy_users")
-      .update({
-        wallet_balance: balanceAfter,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("telegram_id", input.telegramId)
-      .eq("wallet_balance", balanceBefore)
-      .select("telegram_id");
-
-    if (error) {
-      throw error;
-    }
-
-    if ((data?.length ?? 0) > 0) {
-      return {
-        success: true,
-        balanceBefore,
-        balanceAfter,
-      };
-    }
+    throw error;
   }
 
-  throw new Error("Wallet balance update failed after multiple retries.");
+  return {
+    success: true,
+    balanceAfter: extractRpcBalance(data),
+  };
 }
 
 export async function getBalance(telegramId: number): Promise<number> {

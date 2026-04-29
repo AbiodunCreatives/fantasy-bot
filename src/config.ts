@@ -43,8 +43,27 @@ const envSchema = z.object({
   REDIS_URL: optionalString,
   VIRTUAL_WALLET_START_BALANCE: z.coerce
     .number()
+    .nonnegative()
+    .default(0),
+  SOLANA_RPC_URL: z.string().url("SOLANA_RPC_URL must be a valid URL"),
+  SOLANA_USDC_MINT: z
+    .string()
+    .min(32, "SOLANA_USDC_MINT is required"),
+  SOLANA_TREASURY_SECRET_KEY: z
+    .string()
+    .min(1, "SOLANA_TREASURY_SECRET_KEY is required"),
+  SOLANA_WALLET_ENCRYPTION_KEY: z
+    .string()
+    .min(1, "SOLANA_WALLET_ENCRYPTION_KEY is required"),
+  SOLANA_WALLET_MONITOR_INTERVAL_MS: z.coerce
+    .number()
+    .int()
     .positive()
-    .default(40),
+    .default(60_000),
+  SOLANA_WITHDRAW_MIN_AMOUNT: z.coerce
+    .number()
+    .positive()
+    .default(1),
   FANTASY_MONITOR_INTERVAL_MS: z.coerce
     .number()
     .int()

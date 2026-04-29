@@ -966,18 +966,21 @@ export async function awardFantasyPrize(input: {
   telegramId: number;
   place: number;
   amount: number;
+  referenceId?: string | null;
 }): Promise<boolean> {
   const amount = roundMoney(input.amount);
 
-  const { data, error: payoutError } = await supabase
-    .from("fantasy_payouts")
-    .insert({
-      game_id: input.gameId,
-      telegram_id: input.telegramId,
-      place: input.place,
-      amount,
-    })
-    .select("id");
+  const { data, error: payoutError } = await supabase.rpc(
+    "award_fantasy_prize_with_credit",
+    {
+      p_game_id: input.gameId,
+      p_member_id: input.memberId,
+      p_telegram_id: input.telegramId,
+      p_place: input.place,
+      p_amount: amount,
+      p_reference_id: input.referenceId ?? null,
+    }
+  );
 
   if (payoutError) {
     if (isUniqueViolation(payoutError)) {
@@ -987,7 +990,7 @@ export async function awardFantasyPrize(input: {
     throw payoutError;
   }
 
-  return (data?.length ?? 0) > 0;
+  return Boolean(data);
 }
 
 export async function revokeFantasyPrize(input: {

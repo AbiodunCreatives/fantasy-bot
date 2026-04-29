@@ -11,6 +11,7 @@ import {
   handleFantasyTextInput,
   handleLeague,
   handleStart,
+  handleWallet,
 } from "./bot/handlers/league.ts";
 import { config } from "./config.ts";
 import { supabase } from "./db/client.ts";
@@ -20,6 +21,10 @@ import {
   startFantasySettlementMonitor,
   stopFantasySettlementMonitor,
 } from "./fantasy-settlement.ts";
+import {
+  startSolanaWalletMonitor,
+  stopSolanaWalletMonitor,
+} from "./solana-wallet-monitor.ts";
 import { redis } from "./utils/rateLimit.ts";
 
 const bot = new Bot(config.BOT_TOKEN);
@@ -39,8 +44,9 @@ bot.use(async (ctx, next) => {
 
 bot.command("start", wrap(handleStart));
 bot.command("league", wrap(handleLeague));
+bot.command("wallet", wrap(handleWallet));
 bot.callbackQuery(/^flt:/, wrap(handleFantasyLeagueTrade));
-bot.callbackQuery(/^(start|lobby|arena|funds):/, wrap(handleFantasyLeagueUiAction));
+bot.callbackQuery(/^(start|lobby|arena|funds|wallet):/, wrap(handleFantasyLeagueUiAction));
 bot.callbackQuery("fantasy:join:confirm", wrap(handleFantasyJoinConfirm));
 bot.callbackQuery("fantasy:join:decline", wrap(handleFantasyJoinDecline));
 bot.on("message:text", async (ctx, next) => {
@@ -184,6 +190,7 @@ async function shutdown(signal: string): Promise<void> {
 
   stopFantasyMonitor();
   stopFantasySettlementMonitor();
+  stopSolanaWalletMonitor();
 
   await new Promise<void>((resolve) => {
     server.close(() => resolve());
@@ -222,10 +229,15 @@ async function main(): Promise<void> {
       command: "league",
       description: "Create, join, and view fantasy arenas",
     },
+    {
+      command: "wallet",
+      description: "View your Solana USDC wallet and withdraw",
+    },
   ]);
 
   startFantasyMonitor();
   startFantasySettlementMonitor();
+  startSolanaWalletMonitor();
 
   if (config.WEBHOOK_URL) {
     const webhookUrl = `${config.WEBHOOK_URL}/webhook/${config.WEBHOOK_PATH_SECRET}`;

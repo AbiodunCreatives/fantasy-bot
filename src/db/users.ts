@@ -1,8 +1,7 @@
 import { supabase } from "./client.ts";
-import { config } from "../config.ts";
 
 function roundMoney(value: number): number {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
+  return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
 
 function isUniqueViolation(error: { code?: string } | null): boolean {
@@ -17,7 +16,7 @@ export async function upsertUserProfile(
   const { error: insertError } = await supabase.from("fantasy_users").insert({
     telegram_id: telegramId,
     username: username ?? null,
-    wallet_balance: roundMoney(config.VIRTUAL_WALLET_START_BALANCE),
+    wallet_balance: roundMoney(0),
     created_at: now,
     updated_at: now,
     last_seen_at: now,
