@@ -1391,7 +1391,7 @@ function buildRoundBroadcastPayload(input: {
     telegramId: 0,
     messageId: 0,
     chatId: 0,
-    displayMode: "openAlert",
+    displayMode: "livePrompt",
     memberCount: input.memberCount,
     rank: input.rank,
     virtualBalance: input.virtualBalance,
@@ -1407,11 +1407,7 @@ function buildRoundBroadcastPayload(input: {
     selectedStake: null,
   };
 
-  return {
-    text: buildRoundOpenAlertText(state),
-    keyboard: buildRoundOpenAlertKeyboard(state.ref),
-    state,
-  };
+  return buildLivePromptPayload(state);
 }
 
 function buildLivePromptPayload(state: PromptState): FantasyTradePromptPayload {
