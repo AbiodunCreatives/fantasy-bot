@@ -235,9 +235,9 @@ function buildStartOnboardingText(input: {
   return [
     `Welcome, ${input.firstName}.`,
     "",
-    "Bayse Arena uses Solana USDC for entry, prizes, and withdrawals.",
+    "HeadlineOdds Arena uses USDC for entry, prizes, and withdrawals.",
     `Available balance: ${formatUsdc(input.balance)}`,
-    "Open Wallet to view your personal deposit address or tap Fund NGN for a PajCash top-up.",
+    "Open Wallet to view your Deposit address or tap Fund NGN for a PajCash top-up.",
   ].join("\n");
 }
 
