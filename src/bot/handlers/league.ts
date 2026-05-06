@@ -8,11 +8,13 @@ import { config } from "../../config.ts";
 import { getBalance } from "../../db/balances.ts";
 import {
   buildFantasyTradeStakeSelection,
+  clearPendingFantasyCustomFundAmount,
   clearFantasyTradePromptState,
   clearPendingFantasyLeagueJoin,
   createFantasyLeagueGame,
   getFantasyLeagueStatusView,
   getFantasyLeagueBoardText,
+  hasPendingFantasyCustomFundAmount,
   getFantasyLeagueDetailsByCode,
   getFantasyLeagueJoinPreview,
   joinFantasyLeagueGame,
@@ -23,6 +25,7 @@ import {
   prepareFantasyTradePromptForArena,
   registerFantasyTradePromptDelivery,
   saveFantasyNextRoundReminder,
+  savePendingFantasyCustomFundAmount,
   savePendingFantasyLeagueJoin,
   FANTASY_MIN_ENTRY_FEE,
   type FantasyTradePlacementResult,
@@ -73,8 +76,14 @@ const FUNDS_BACK_TO_LOBBY = "funds:lobby";
 const WALLET_OPEN = "wallet:open";
 const WALLET_REFRESH = "wallet:refresh";
 const WALLET_NAIRA_HELP = "wallet:naira";
+const WALLET_NAIRA_AMOUNT_PREFIX = "wallet:naira:amount:";
+const WALLET_NAIRA_CUSTOM = "wallet:naira:custom";
+const WALLET_NAIRA_BACK = "wallet:naira:back";
 const WALLET_WITHDRAW_HELP = "wallet:withdraw";
 const WALLET_BACK = "wallet:back";
+const WALLET_NAIRA_MIN_AMOUNT = 1_000;
+const WALLET_NAIRA_MAX_AMOUNT = 20_000;
+const WALLET_NAIRA_PRESET_AMOUNTS = [1_000, 2_000, 5_000, 10_000] as const;
 
 type FantasyLeagueStatusViewData = Awaited<
   ReturnType<typeof getFantasyLeagueStatusView>
@@ -107,6 +116,13 @@ function formatUsdc(value: number): string {
 
 function formatNaira(value: number): string {
   return `NGN ${roundMoney(value).toLocaleString("en-US", {
+    minimumFractionDigits: Number.isInteger(roundMoney(value)) ? 0 : 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatNairaCompact(value: number): string {
+  return `₦${roundMoney(value).toLocaleString("en-US", {
     minimumFractionDigits: Number.isInteger(roundMoney(value)) ? 0 : 2,
     maximumFractionDigits: 2,
   })}`;
@@ -221,16 +237,17 @@ function buildStartOnboardingText(input: {
     "",
     "Bayse Arena uses Solana USDC for entry, prizes, and withdrawals.",
     `Available balance: ${formatUsdc(input.balance)}`,
-    "Open Wallet to view your personal deposit address.",
+    "Open Wallet to view your personal deposit address or tap Fund NGN for a PajCash top-up.",
   ].join("\n");
 }
 
 function buildStartOnboardingKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Browse Arenas", START_LOBBY)
+    .text("Create Arena", ARENA_CREATE)
     .text("Wallet", START_WALLET)
     .row()
-    .text("+ Create Arena", ARENA_CREATE);
+    .text("Browse Arenas", START_LOBBY)
+    .text("Fund NGN", WALLET_NAIRA_HELP);
 }
 
 function buildCreateArenaPickerText(balance: number): string {
@@ -592,7 +609,7 @@ function buildCreateInsufficientKeyboard(): InlineKeyboard {
 function buildAddFundsText(): string {
   return [
     "Open /wallet to view your Solana USDC deposit address.",
-    "You can also use /wallet fund-ngn 10000 to top up from a Naira bank transfer via PajCash.",
+    "You can also tap Fund NGN or use /wallet fund-ngn 10000 to top up from a Naira bank transfer via PajCash.",
     "Deposits credit your in-bot balance and withdrawals pay out to any Solana wallet.",
   ].join("\n");
 }
@@ -668,7 +685,7 @@ function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSumm
     "",
     "Send only native USDC on Solana to this address.",
     "Arena entries debit this balance. Winnings return here.",
-    "For Naira top-ups, use /wallet fund-ngn 10000.",
+    "For Naira top-ups, tap Fund NGN or use /wallet fund-ngn 10000.",
     "",
     "Recent activity:",
     ...ledgerLines,
@@ -684,7 +701,7 @@ function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSumm
 function buildWalletKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text("Refresh deposits", WALLET_REFRESH)
-    .text("Fund with Naira", WALLET_NAIRA_HELP)
+    .text("Fund NGN", WALLET_NAIRA_HELP)
     .row()
     .text("Withdraw help", WALLET_WITHDRAW_HELP)
     .row()
@@ -693,15 +710,132 @@ function buildWalletKeyboard(): InlineKeyboard {
 
 function buildWalletNairaHelpText(): string {
   return [
-    "Fund with Naira",
+    "Fund NGN",
     "",
-    "Use: /wallet fund-ngn <amount_ngn>",
-    "Example:",
-    "/wallet fund-ngn 10000",
+    "Choose a PajCash top-up amount below.",
+    `Minimum: ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)}`,
+    `Maximum: ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}`,
+    "",
+    "You can also type /wallet fund-ngn <amount_ngn>.",
+    "Example: /wallet fund-ngn 10000",
     "",
     "Bayse will create a PajCash bank transfer order for you.",
     "Your in-bot balance updates only after native USDC lands in your Solana wallet and the bot sees the deposit.",
   ].join("\n");
+}
+
+function buildWalletNairaPickerKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(
+      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[0]),
+      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[0]}`
+    )
+    .text(
+      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[1]),
+      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[1]}`
+    )
+    .row()
+    .text(
+      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[2]),
+      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[2]}`
+    )
+    .text(
+      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[3]),
+      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[3]}`
+    )
+    .row()
+    .text("Custom Amount", WALLET_NAIRA_CUSTOM)
+    .row()
+    .text("Back to wallet", WALLET_NAIRA_BACK);
+}
+
+function buildWalletNairaCustomAmountText(): string {
+  return [
+    "Custom Fund NGN",
+    "",
+    `Type any amount between ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)} and ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}.`,
+    "Examples:",
+    "3500",
+    "₦3,500",
+    "",
+    "Or tap one of the preset amounts below.",
+  ].join("\n");
+}
+
+function buildWalletNairaCustomAmountKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(
+      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[0]),
+      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[0]}`
+    )
+    .text(
+      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[1]),
+      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[1]}`
+    )
+    .row()
+    .text(
+      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[2]),
+      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[2]}`
+    )
+    .text(
+      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[3]),
+      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[3]}`
+    )
+    .row()
+    .text("Back to wallet", WALLET_NAIRA_BACK);
+}
+
+function buildWalletNairaAmountValidationText(message?: string): string {
+  return [
+    message ?? "Choose a valid Fund NGN amount.",
+    "",
+    `Minimum: ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)}`,
+    `Maximum: ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}`,
+  ].join("\n");
+}
+
+function parseWalletNairaAmountInput(value: string): number | null {
+  const normalized = value
+    .trim()
+    .replace(/ngn/gi, "")
+    .replace(/₦/g, "")
+    .replace(/,/g, "")
+    .replace(/\s+/g, "");
+
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getWalletNairaAmountError(amount: number): string | null {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return buildWalletNairaAmountValidationText("Enter a valid Naira amount.");
+  }
+
+  if (amount < WALLET_NAIRA_MIN_AMOUNT) {
+    return buildWalletNairaAmountValidationText(
+      `Minimum Fund NGN amount is ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)}.`
+    );
+  }
+
+  if (amount > WALLET_NAIRA_MAX_AMOUNT) {
+    return buildWalletNairaAmountValidationText(
+      `Maximum Fund NGN amount for now is ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}.`
+    );
+  }
+
+  return null;
+}
+
+function buildWalletNairaOrderKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("Fund NGN Again", WALLET_NAIRA_HELP)
+    .text("Open wallet", WALLET_OPEN)
+    .row()
+    .text("Browse arenas", WALLET_BACK);
 }
 
 function buildWalletCommandHelpText(): string {
@@ -749,6 +883,25 @@ function buildWalletNairaOrderText(input: {
     "",
     "After PajCash completes the order and USDC lands in your Solana wallet, Bayse will credit your in-bot balance.",
   ].join("\n");
+}
+
+async function createWalletNairaOrderText(
+  telegramId: number,
+  amount: number
+): Promise<string> {
+  const order = await createFantasyPajCashOnramp({
+    telegramId,
+    fiatAmount: amount,
+  });
+
+  return buildWalletNairaOrderText({
+    orderId: order.order_id,
+    fiatAmount: order.fiat_amount,
+    expectedUsdcAmount: order.expected_usdc_amount,
+    bankName: order.bank_name ?? "PAJ CASH",
+    accountName: order.account_name ?? "PAJ CASH",
+    accountNumber: order.account_number ?? "Unavailable",
+  });
 }
 
 function buildWalletWithdrawalRequestedText(input: {
@@ -1650,16 +1803,19 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
   const data = ctx.callbackQuery.data;
 
   if (data === START_HOW_IT_WORKS) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await editTradePromptMessage(ctx, buildHowItWorksText(), buildHowItWorksKeyboard());
     return;
   }
 
   if (data === START_WALLET || data === WALLET_OPEN) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await renderWalletView(ctx, ctx.from.id, { refresh: true });
     return;
   }
 
   if (data === START_LOBBY || data === LOBBY_REFRESH || data === ARENA_BACK_TO_LOBBY) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await openLobbyOrFundingPrompt(ctx, ctx.from.id);
     return;
   }
@@ -1687,41 +1843,99 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
   }
 
   if (data === LOBBY_LIVE) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await openLobbyOrFundingPrompt(ctx, ctx.from.id, { liveOnly: true });
     return;
   }
 
   if (data === FUNDS_ADD) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await renderWalletView(ctx, ctx.from.id, { refresh: true });
     return;
   }
 
   if (data === FUNDS_CUSTOM) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await editTradePromptMessage(ctx, buildWalletWithdrawHelpText(), buildWalletKeyboard());
     return;
   }
 
   if (data === FUNDS_BACK_TO_LOBBY || data === WALLET_BACK) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await openLobbyOrFundingPrompt(ctx, ctx.from.id);
     return;
   }
 
   if (data === WALLET_REFRESH || data.startsWith("funds:amount:")) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await renderWalletView(ctx, ctx.from.id, { refresh: true });
     return;
   }
 
   if (data === WALLET_WITHDRAW_HELP) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await editTradePromptMessage(ctx, buildWalletWithdrawHelpText(), buildWalletKeyboard());
     return;
   }
 
   if (data === WALLET_NAIRA_HELP) {
-    await editTradePromptMessage(ctx, buildWalletNairaHelpText(), buildWalletKeyboard());
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+    await editTradePromptMessage(
+      ctx,
+      buildWalletNairaHelpText(),
+      buildWalletNairaPickerKeyboard()
+    );
+    return;
+  }
+
+  if (data === WALLET_NAIRA_CUSTOM) {
+    await savePendingFantasyCustomFundAmount(ctx.from.id);
+    await editTradePromptMessage(
+      ctx,
+      buildWalletNairaCustomAmountText(),
+      buildWalletNairaCustomAmountKeyboard()
+    );
+    return;
+  }
+
+  if (data === WALLET_NAIRA_BACK) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+    await renderWalletView(ctx, ctx.from.id, { refresh: true });
+    return;
+  }
+
+  if (data.startsWith(WALLET_NAIRA_AMOUNT_PREFIX)) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+
+    const amount = Number.parseFloat(data.slice(WALLET_NAIRA_AMOUNT_PREFIX.length));
+    const amountError = getWalletNairaAmountError(amount);
+
+    if (amountError) {
+      await editTradePromptMessage(
+        ctx,
+        amountError,
+        buildWalletNairaPickerKeyboard()
+      );
+      return;
+    }
+
+    try {
+      const orderText = await createWalletNairaOrderText(ctx.from.id, amount);
+      await editTradePromptMessage(ctx, orderText, buildWalletNairaOrderKeyboard());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Something went wrong.";
+      await editTradePromptMessage(
+        ctx,
+        message,
+        buildWalletNairaPickerKeyboard()
+      );
+    }
+
     return;
   }
 
   if (data === ARENA_CREATE) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     const balance = await getBalance(ctx.from.id);
     await editTradePromptMessage(
       ctx,
@@ -1843,8 +2057,52 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
 }
 
 export async function handleFantasyTextInput(ctx: Context): Promise<boolean> {
-  void ctx;
-  return false;
+  if (!ctx.from) {
+    return false;
+  }
+
+  if (!(await hasPendingFantasyCustomFundAmount(ctx.from.id))) {
+    return false;
+  }
+
+  const messageText = (ctx.message?.text ?? "").trim();
+
+  if (!messageText || messageText.startsWith("/")) {
+    return false;
+  }
+
+  const amount = parseWalletNairaAmountInput(messageText);
+
+  if (amount === null) {
+    await ctx.reply(buildWalletNairaCustomAmountText(), {
+      reply_markup: buildWalletNairaCustomAmountKeyboard(),
+    });
+    return true;
+  }
+
+  const amountError = getWalletNairaAmountError(amount);
+
+  if (amountError) {
+    await ctx.reply(amountError, {
+      reply_markup: buildWalletNairaCustomAmountKeyboard(),
+    });
+    return true;
+  }
+
+  try {
+    const orderText = await createWalletNairaOrderText(ctx.from.id, amount);
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+    await ctx.reply(orderText, {
+      reply_markup: buildWalletNairaOrderKeyboard(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Something went wrong.";
+    await ctx.reply(message, {
+      reply_markup: buildWalletNairaCustomAmountKeyboard(),
+    });
+  }
+
+  return true;
 }
 
 export async function handleWallet(ctx: Context): Promise<void> {
@@ -1856,11 +2114,13 @@ export async function handleWallet(ctx: Context): Promise<void> {
   const subcommand = args[0]?.toLowerCase();
 
   if (!subcommand || subcommand === "address" || subcommand === "refresh") {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await renderWalletView(ctx, ctx.from.id, { refresh: true });
     return;
   }
 
   if (subcommand === "withdraw") {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
     const amount = Number.parseFloat(args[1] ?? "");
     const destinationAddress = args[2]?.trim() ?? "";
 
@@ -1912,37 +2172,25 @@ export async function handleWallet(ctx: Context): Promise<void> {
 
   if (subcommand === "fund-ngn") {
     const amount = Number.parseFloat(args[1] ?? "");
+    const amountError = getWalletNairaAmountError(amount);
 
-    if (!Number.isFinite(amount) || amount <= 0) {
-      await ctx.reply(buildWalletNairaHelpText(), {
-        reply_markup: buildWalletKeyboard(),
+    if (amountError) {
+      await ctx.reply(amountError, {
+        reply_markup: buildWalletNairaPickerKeyboard(),
       });
       return;
     }
 
     try {
-      const order = await createFantasyPajCashOnramp({
-        telegramId: ctx.from.id,
-        fiatAmount: amount,
+      await clearPendingFantasyCustomFundAmount(ctx.from.id);
+      const orderText = await createWalletNairaOrderText(ctx.from.id, amount);
+      await ctx.reply(orderText, {
+        reply_markup: buildWalletNairaOrderKeyboard(),
       });
-
-      await ctx.reply(
-        buildWalletNairaOrderText({
-          orderId: order.order_id,
-          fiatAmount: order.fiat_amount,
-          expectedUsdcAmount: order.expected_usdc_amount,
-          bankName: order.bank_name ?? "PAJ CASH",
-          accountName: order.account_name ?? "PAJ CASH",
-          accountNumber: order.account_number ?? "Unavailable",
-        }),
-        {
-          reply_markup: buildWalletKeyboard(),
-        }
-      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Something went wrong.";
       await ctx.reply(message, {
-        reply_markup: buildWalletKeyboard(),
+        reply_markup: buildWalletNairaPickerKeyboard(),
       });
     }
 
@@ -1960,37 +2208,25 @@ export async function handleFundNgn(ctx: Context): Promise<void> {
   }
 
   const amount = Number.parseFloat((ctx.message?.text ?? "").split(/\s+/)[1] ?? "");
+  const amountError = getWalletNairaAmountError(amount);
 
-  if (!Number.isFinite(amount) || amount <= 0) {
-    await ctx.reply(buildWalletNairaHelpText(), {
-      reply_markup: buildWalletKeyboard(),
+  if (amountError) {
+    await ctx.reply(amountError, {
+      reply_markup: buildWalletNairaPickerKeyboard(),
     });
     return;
   }
 
   try {
-    const order = await createFantasyPajCashOnramp({
-      telegramId: ctx.from.id,
-      fiatAmount: amount,
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+    const orderText = await createWalletNairaOrderText(ctx.from.id, amount);
+    await ctx.reply(orderText, {
+      reply_markup: buildWalletNairaOrderKeyboard(),
     });
-
-    await ctx.reply(
-      buildWalletNairaOrderText({
-        orderId: order.order_id,
-        fiatAmount: order.fiat_amount,
-        expectedUsdcAmount: order.expected_usdc_amount,
-        bankName: order.bank_name ?? "PAJ CASH",
-        accountName: order.account_name ?? "PAJ CASH",
-        accountNumber: order.account_number ?? "Unavailable",
-      }),
-      {
-        reply_markup: buildWalletKeyboard(),
-      }
-    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Something went wrong.";
     await ctx.reply(message, {
-      reply_markup: buildWalletKeyboard(),
+      reply_markup: buildWalletNairaPickerKeyboard(),
     });
   }
 }

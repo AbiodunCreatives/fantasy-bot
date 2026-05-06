@@ -108,6 +108,39 @@ function isUniqueViolation(error: { code?: string } | null): boolean {
   return error?.code === "23505";
 }
 
+const warnedMissingSchemaColumns = new Set<string>();
+
+function isMissingSchemaCacheColumnError(
+  error: unknown,
+  table: string,
+  column: string
+): boolean {
+  const candidate = error as { code?: string; message?: string } | null;
+
+  return (
+    candidate?.code === "PGRST204" &&
+    typeof candidate.message === "string" &&
+    candidate.message.includes(`'${column}'`) &&
+    candidate.message.includes(`'${table}'`)
+  );
+}
+
+function warnMissingSchemaColumnOnce(table: string, column: string): void {
+  const key = `${table}.${column}`;
+
+  if (warnedMissingSchemaColumns.has(key)) {
+    return;
+  }
+
+  warnedMissingSchemaColumns.add(key);
+
+  console.warn(
+    `[fantasy] Supabase schema cache is missing ${key}. ` +
+      "Round missed-trade tracking will be partially disabled until " +
+      "src/db/schema.sql is rerun and the schema cache is refreshed."
+  );
+}
+
 function parseMoney(value: number | string | null | undefined): number {
   if (typeof value === "number") {
     return roundMoney(value);
@@ -716,9 +749,42 @@ export async function updateFantasyMemberRoundTracking(input: {
     .update(payload)
     .eq("id", input.memberId);
 
-  if (error) {
-    throw error;
+  if (!error) {
+    return;
   }
+
+  if (
+    payload.consecutive_missed_rounds !== undefined &&
+    isMissingSchemaCacheColumnError(
+      error,
+      "fantasy_game_members",
+      "consecutive_missed_rounds"
+    )
+  ) {
+    warnMissingSchemaColumnOnce(
+      "fantasy_game_members",
+      "consecutive_missed_rounds"
+    );
+
+    delete payload.consecutive_missed_rounds;
+
+    if (Object.keys(payload).length === 0) {
+      return;
+    }
+
+    const { error: fallbackError } = await supabase
+      .from("fantasy_game_members")
+      .update(payload)
+      .eq("id", input.memberId);
+
+    if (fallbackError) {
+      throw fallbackError;
+    }
+
+    return;
+  }
+
+  throw error;
 }
 
 export async function recordFantasyTrade(input: {

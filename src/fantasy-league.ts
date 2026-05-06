@@ -90,6 +90,9 @@ const FANTASY_NEXT_ROUND_REMINDER_TTL_SECONDS = 2 * 60 * 60;
 const BINANCE_BTC_PRICE_URL =
   "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT";
 const BINANCE_BTC_PRICE_CACHE_TTL_MS = 10_000;
+const BINANCE_BTC_PRICE_TIMEOUT_MS = 5_000;
+const BINANCE_BTC_PRICE_FAILURE_TTL_MS = 60_000;
+const BINANCE_BTC_PRICE_STALE_MAX_AGE_MS = 5 * 60_000;
 const MIN_VALID_BTC_PRICE_USD = 1_000;
 
 interface FantasyTradeRefPayload {
@@ -137,9 +140,24 @@ async function getCachedBinanceBtcPrice(): Promise<number | null> {
     return cachedBinanceBtcPrice.value;
   }
 
+  if (
+    cachedBinanceBtcPriceFailure &&
+    now - cachedBinanceBtcPriceFailure.failedAt < BINANCE_BTC_PRICE_FAILURE_TTL_MS
+  ) {
+    if (
+      cachedBinanceBtcPrice &&
+      now - cachedBinanceBtcPrice.fetchedAt < BINANCE_BTC_PRICE_STALE_MAX_AGE_MS
+    ) {
+      return cachedBinanceBtcPrice.value;
+    }
+
+    return null;
+  }
+
   try {
     const response = await fetch(BINANCE_BTC_PRICE_URL, {
       headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(BINANCE_BTC_PRICE_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -160,10 +178,28 @@ async function getCachedBinanceBtcPrice(): Promise<number | null> {
       value: parsedPrice,
       fetchedAt: now,
     };
+    cachedBinanceBtcPriceFailure = null;
 
     return parsedPrice;
   } catch (error) {
-    console.warn("[fantasy] Failed to load BTC price from Binance:", error);
+    cachedBinanceBtcPriceFailure = {
+      failedAt: now,
+      message: error instanceof Error ? error.message : String(error),
+    };
+
+    console.warn(
+      `[fantasy] Failed to load BTC price from Binance; using fallback sources for ${Math.round(
+        BINANCE_BTC_PRICE_FAILURE_TTL_MS / 1000
+      )}s: ${cachedBinanceBtcPriceFailure.message}`
+    );
+
+    if (
+      cachedBinanceBtcPrice &&
+      now - cachedBinanceBtcPrice.fetchedAt < BINANCE_BTC_PRICE_STALE_MAX_AGE_MS
+    ) {
+      return cachedBinanceBtcPrice.value;
+    }
+
     return null;
   }
 }
@@ -288,6 +324,12 @@ let cachedBinanceBtcPrice:
   | {
       value: number;
       fetchedAt: number;
+    }
+  | null = null;
+let cachedBinanceBtcPriceFailure:
+  | {
+      failedAt: number;
+      message: string;
     }
   | null = null;
 
