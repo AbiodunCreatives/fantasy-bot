@@ -10,7 +10,9 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx tmp/e2e-flow-smoke.ts",
-    "pajcash:session": "tsx src/pajcash-session.ts"
+    "pajcash:session": "tsx src/pajcash-session.ts",
+    "wallet:reconcile": "tsx tmp/reconcile-fantasy-wallets.ts",
+    "wallet:reset-all": "tsx tmp/reconcile-fantasy-wallets.ts -- --reset-all"
   },
   "packageManager": "pnpm@10.30.3",
   "dependencies": {

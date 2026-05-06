@@ -110,3 +110,7 @@ The full self-contained schema lives in [src/db/schema.sql](./src/db/schema.sql)
 - `fantasy_wallet_ledger` for auditable credits and debits
 - `fantasy_wallet_deposits` for confirmed on-chain deposit credits
 - `fantasy_wallet_withdrawals` for queued and completed withdrawals
+
+Use `pnpm wallet:reconcile -- --telegram-id=<id>` to inspect legacy balance mismatches and `--reset --yes` to clear a single user's wallet state for a fresh wallet reset.
+
+Use `pnpm wallet:reset-all -- --yes` to reset every user's internal wallet balance and deposit sync state to zero. After that, a wallet sync run will repopulate balances from true on-chain USDC deposits.
