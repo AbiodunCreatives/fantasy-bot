@@ -9,10 +9,23 @@ import {
   type DashboardSeriesPoint,
   type DashboardSummary,
 } from "./db/dashboard.ts";
+import { createRateLimitMiddleware } from "./http-security.ts";
 
 const ADMIN_COOKIE_NAME = "fantasy_admin";
 const ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 const DASHBOARD_CACHE_TTL_MS = 60_000;
+const adminRouteRateLimit = createRateLimitMiddleware({
+  keyPrefix: "admin-route",
+  limit: 30,
+  windowSeconds: 60,
+  message: "Too many admin requests. Please wait a minute.",
+});
+const adminLoginRateLimit = createRateLimitMiddleware({
+  keyPrefix: "admin-login",
+  limit: 10,
+  windowSeconds: 300,
+  message: "Too many admin login attempts. Please wait a few minutes.",
+});
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -74,8 +87,6 @@ function parseCookies(cookieHeader: string | undefined): Record<string, string> 
 function getPresentedToken(req: Request): string | null {
   const authorization = (req.header("authorization") ?? "").trim();
   const headerToken = (req.header("x-admin-token") ?? "").trim();
-  const queryToken =
-    typeof req.query["token"] === "string" ? req.query["token"].trim() : "";
 
   if (headerToken) {
     return headerToken;
@@ -87,11 +98,11 @@ function getPresentedToken(req: Request): string | null {
       : authorization;
   }
 
-  return queryToken || null;
+  return null;
 }
 
-function hasTokenQuery(req: Request): boolean {
-  return typeof req.query["token"] === "string" && req.query["token"].trim().length > 0;
+function hasLegacyTokenQuery(req: Request): boolean {
+  return typeof req.query["token"] === "string";
 }
 
 function getDashboardDays(req: Request): number {
@@ -101,6 +112,24 @@ function getDashboardDays(req: Request): number {
       : undefined;
 
   return clampDashboardDays(rawDays);
+}
+
+function getPostedDashboardDays(req: Request): number {
+  const rawDays =
+    req.body && typeof req.body === "object" && "days" in req.body
+      ? Number.parseInt(String(req.body["days"] ?? ""), 10)
+      : undefined;
+
+  return clampDashboardDays(rawDays);
+}
+
+function getPostedAdminToken(req: Request): string {
+  if (!req.body || typeof req.body !== "object" || !("token" in req.body)) {
+    return "";
+  }
+
+  const token = req.body["token"];
+  return typeof token === "string" ? token.trim() : "";
 }
 
 function setAdminCookie(res: Response, token: string): void {
@@ -159,6 +188,11 @@ function isAuthorized(req: Request): {
   }
 
   return { allowed: false, shouldSetCookie: false };
+}
+
+function setNoStoreHeaders(res: Response): void {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.setHeader("Pragma", "no-cache");
 }
 
 async function loadDashboardSummary(days: number): Promise<DashboardSummary> {
@@ -811,7 +845,10 @@ function renderDashboardPage(summary: DashboardSummary): string {
   ].join("");
 }
 
-function renderUnauthorizedPage(): string {
+function renderUnauthorizedPage(input: {
+  days: number;
+  invalidCredentials?: boolean;
+}): string {
   return [
     "<!DOCTYPE html>",
     '<html lang="en">',
@@ -858,15 +895,54 @@ function renderUnauthorizedPage(): string {
         padding: 2px 6px;
         border-radius: 999px;
       }
+
+      form {
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+      }
+
+      input {
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(33, 29, 24, 0.18);
+        background: rgba(255, 255, 255, 0.8);
+        font: inherit;
+        box-sizing: border-box;
+      }
+
+      button {
+        width: fit-content;
+        padding: 12px 16px;
+        border: 0;
+        border-radius: 999px;
+        background: #211d18;
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .error {
+        color: #8f2d1f;
+        font-weight: 600;
+      }
     `,
     "</style>",
     "</head>",
     "<body>",
     '<section class="card">',
     "<h1>Admin dashboard is locked.</h1>",
-    "<p>Start a browser session by opening the dashboard with your admin token once.</p>",
-    "<p><code>/admin/dashboard?token=YOUR_ADMIN_DASHBOARD_TOKEN</code></p>",
-    "<p>After that first request, the server stores a short-lived HTTP-only cookie for this browser session.</p>",
+    input.invalidCredentials
+      ? '<p class="error">That admin token was rejected. Please try again.</p>'
+      : "<p>Sign in with your admin token to start a short-lived browser session.</p>",
+    "<p>For scripts and API clients, send <code>x-admin-token</code> or <code>Authorization: Bearer ...</code>.</p>",
+    '<form method="post" action="/admin/login">',
+    `<input type="hidden" name="days" value="${input.days}" />`,
+    '<label for="token">Admin token</label>',
+    '<input id="token" name="token" type="password" autocomplete="current-password" required />',
+    '<button type="submit">Open dashboard</button>',
+    "</form>",
     "</section>",
     "</body>",
     "</html>",
@@ -893,27 +969,33 @@ function renderDashboardErrorPage(days: number): string {
 }
 
 export function registerAdminDashboard(app: Express): void {
-  app.get("/admin/dashboard", async (req, res) => {
+  app.get("/admin/dashboard", adminRouteRateLimit, async (req, res) => {
     if (!isDashboardEnabled()) {
       res.sendStatus(404);
       return;
     }
 
-    const access = isAuthorized(req);
     const days = getDashboardDays(req);
+    setNoStoreHeaders(res);
+
+    if (hasLegacyTokenQuery(req)) {
+      res.redirect(`/admin/dashboard?days=${days}`);
+      return;
+    }
+
+    const access = isAuthorized(req);
 
     if (!access.allowed) {
-      res.status(401).type("html").send(renderUnauthorizedPage());
+      res.status(401).type("html").send(
+        renderUnauthorizedPage({
+          days,
+        })
+      );
       return;
     }
 
     if (access.shouldSetCookie) {
       setAdminCookie(res, getAdminToken());
-    }
-
-    if (hasTokenQuery(req)) {
-      res.redirect(`/admin/dashboard?days=${days}`);
-      return;
     }
 
     try {
@@ -925,13 +1007,39 @@ export function registerAdminDashboard(app: Express): void {
     }
   });
 
-  app.get("/admin/api/dashboard", async (req, res) => {
+  app.post("/admin/login", adminLoginRateLimit, (req, res) => {
+    if (!isDashboardEnabled()) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const days = getPostedDashboardDays(req);
+    const token = getPostedAdminToken(req);
+    setNoStoreHeaders(res);
+
+    if (!token || token !== getAdminToken()) {
+      clearAdminCookie(res);
+      res.status(401).type("html").send(
+        renderUnauthorizedPage({
+          days,
+          invalidCredentials: true,
+        })
+      );
+      return;
+    }
+
+    setAdminCookie(res, token);
+    res.status(303).setHeader("Location", `/admin/dashboard?days=${days}`).end();
+  });
+
+  app.get("/admin/api/dashboard", adminRouteRateLimit, async (req, res) => {
     if (!isDashboardEnabled()) {
       res.sendStatus(404);
       return;
     }
 
     const access = isAuthorized(req);
+    setNoStoreHeaders(res);
 
     if (!access.allowed) {
       res.status(401).json({
@@ -955,7 +1063,8 @@ export function registerAdminDashboard(app: Express): void {
     }
   });
 
-  app.post("/admin/logout", (_req, res) => {
+  app.post("/admin/logout", adminRouteRateLimit, (_req, res) => {
+    setNoStoreHeaders(res);
     clearAdminCookie(res);
     res.status(303).setHeader("Location", "/admin/dashboard").end();
   });

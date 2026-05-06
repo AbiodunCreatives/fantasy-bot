@@ -18,6 +18,7 @@ import { config } from "./config.ts";
 import { supabase } from "./db/client.ts";
 import { upsertUserProfile } from "./db/users.ts";
 import { startFantasyMonitor, stopFantasyMonitor } from "./fantasy-monitor.ts";
+import { createRateLimitMiddleware } from "./http-security.ts";
 import { reconcilePajCashWebhook } from "./pajcash.ts";
 import {
   startFantasySettlementMonitor,
@@ -31,8 +32,28 @@ import { redis } from "./utils/rateLimit.ts";
 
 const bot = new Bot(config.BOT_TOKEN);
 const app = express();
+const healthRateLimit = createRateLimitMiddleware({
+  keyPrefix: "health-route",
+  limit: 30,
+  windowSeconds: 60,
+  message: "Too many health checks. Please wait a minute.",
+});
+const pajcashWebhookRateLimit = createRateLimitMiddleware({
+  keyPrefix: "pajcash-webhook",
+  limit: 60,
+  windowSeconds: 60,
+  message: "Too many PajCash webhook requests. Please wait a minute.",
+});
+const telegramWebhookRateLimit = createRateLimitMiddleware({
+  keyPrefix: "telegram-webhook",
+  limit: 180,
+  windowSeconds: 60,
+  message: "Too many Telegram webhook requests. Please wait a minute.",
+});
 
+app.set("trust proxy", true);
 app.use(express.json({ limit: "100kb" }));
+app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 registerAdminDashboard(app);
 
 bot.use(async (ctx, next) => {
@@ -112,7 +133,7 @@ function matchesHealthCheckToken(
   return (
     normalizedHeader === secret ||
     normalizedHeader === `Bearer ${secret}` ||
-    normalizedQuery === secret
+    (config.NODE_ENV !== "production" && normalizedQuery === secret)
   );
 }
 
@@ -120,7 +141,7 @@ app.get("/", (_req, res) => {
   res.status(200).send("Bayse fantasy bot is running. Use /health for health checks.");
 });
 
-app.get("/health", async (req, res) => {
+app.get("/health", healthRateLimit, async (req, res) => {
   if (
     config.HEALTH_CHECK_TOKEN &&
     !matchesHealthCheckToken(
@@ -147,7 +168,7 @@ app.get("/health", async (req, res) => {
   });
 });
 
-app.post("/webhook/pajcash/:secret", async (req, res) => {
+app.post("/webhook/pajcash/:secret", pajcashWebhookRateLimit, async (req, res) => {
   const configuredSecret = config.PAJCASH_WEBHOOK_PATH_SECRET?.trim() ?? "";
 
   if (!configuredSecret) {
@@ -170,7 +191,7 @@ app.post("/webhook/pajcash/:secret", async (req, res) => {
   }
 });
 
-app.post("/webhook/:secret", (req, res) => {
+app.post("/webhook/:secret", telegramWebhookRateLimit, (req, res) => {
   if (req.params["secret"] !== config.WEBHOOK_PATH_SECRET) {
     console.warn("[webhook] Rejected request with invalid path secret");
     res.sendStatus(403);

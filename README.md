@@ -55,8 +55,10 @@ If you only want the admin dashboard and do not need the Telegram bot running, y
 
 Then run `pnpm start` and open:
 
-- `http://localhost:3000/admin/dashboard?token=YOUR_ADMIN_DASHBOARD_TOKEN`
-- `http://localhost:3000/admin/api/dashboard?token=YOUR_ADMIN_DASHBOARD_TOKEN`
+- `http://localhost:3000/admin/dashboard`
+
+Use the admin token in the login form for the browser dashboard.
+For scripted API access, send `x-admin-token: YOUR_ADMIN_DASHBOARD_TOKEN` or `Authorization: Bearer YOUR_ADMIN_DASHBOARD_TOKEN` to `/admin/api/dashboard`.
 
 ## PajCash onramp
 
