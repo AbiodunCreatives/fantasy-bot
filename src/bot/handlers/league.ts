@@ -639,7 +639,7 @@ function buildFundsAddedKeyboard(): InlineKeyboard {
 function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSummary>>): string {
   const ledgerLines =
     summary.recentLedger.length === 0
-      ? ["No wallet activity yet."]
+      ? []
       : summary.recentLedger.slice(0, 4).map((entry) => {
           const sign = entry.direction === "credit" ? "+" : "-";
           const label =
@@ -657,25 +657,27 @@ function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSumm
         });
   const withdrawalLines =
     summary.recentWithdrawals.length === 0
-      ? ["No withdrawals yet."]
+      ? ["None"]
       : summary.recentWithdrawals.slice(0, 3).map((entry) => {
           const destination = abbreviateAddress(entry.destination_address);
           return `${entry.status.toUpperCase()}  ${formatUsdc(entry.amount)}  ->  ${destination}`;
         });
   const onrampLines =
     summary.recentOnramps.length === 0
-      ? ["No naira top-ups yet."]
+      ? ["None"]
       : summary.recentOnramps.slice(0, 3).map((entry) => {
           const amount =
             entry.actual_usdc_amount > 0
               ? entry.actual_usdc_amount
               : entry.expected_usdc_amount;
 
-          return `${entry.status.toUpperCase()}  ${formatNaira(entry.fiat_amount)}  ->  ${formatUsdc(amount)}`;
+          return `${formatNaira(entry.fiat_amount)}  ->  ${formatUsdc(amount)}  ${entry.status.toUpperCase()}`;
         });
 
+  const recentActivityHeader = ledgerLines.length > 0 ? "Recent activity:" : "";
+
   return [
-    "Solana USDC Wallet",
+    "💰 Solana USDC Wallet",
     "",
     `Available balance: ${formatUsdc(summary.balance)}`,
     "Network: Solana",
@@ -683,19 +685,19 @@ function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSumm
     "Deposit address:",
     summary.wallet.owner_address,
     "",
-    "Send only native USDC on Solana to this address.",
-    "Arena entries debit this balance. Winnings return here.",
-    "For Naira top-ups, tap Fund NGN or use /wallet fund-ngn 10000.",
+    "For Naira top-ups via Paj, tap Fund NGN",
     "",
-    "Recent activity:",
+    recentActivityHeader,
     ...ledgerLines,
-    "",
+    recentActivityHeader ? "" : "",
     "Recent withdrawals:",
     ...withdrawalLines,
     "",
     "Recent Naira top-ups:",
     ...onrampLines,
-  ].join("\n");
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 }
 
 function buildWalletKeyboard(): InlineKeyboard {
