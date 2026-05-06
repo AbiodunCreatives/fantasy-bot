@@ -292,6 +292,75 @@ async function sweepWalletToTreasury(
   });
 }
 
+async function transferUserUsdc(input: {
+  fromWallet: FantasyWallet;
+  destinationAddress: string;
+  amount: number;
+}): Promise<{ signature: string; destinationUsdcAta: string }> {
+  const userSigner = toUserKeypair(input.fromWallet);
+  const treasury = getTreasuryKeypair();
+  const userAta = new PublicKey(input.fromWallet.usdc_ata);
+  const destinationOwner = new PublicKey(input.destinationAddress);
+  const destinationAta = await ensureAssociatedTokenAccount(
+    destinationOwner,
+    treasury
+  );
+  const decimals = await getUsdcDecimals();
+
+  const tx = new Transaction().add(
+    createTransferCheckedInstruction(
+      userAta,
+      getUsdcMint(),
+      destinationAta,
+      userSigner.publicKey,
+      usdcToRaw(input.amount),
+      decimals
+    )
+  );
+  tx.feePayer = treasury.publicKey;
+
+  const signature = await sendAndConfirmTransaction(
+    getConnection(),
+    tx,
+    [treasury, userSigner],
+    {
+      commitment: SOLANA_COMMITMENT,
+    }
+  );
+
+  return {
+    signature,
+    destinationUsdcAta: destinationAta.toBase58(),
+  };
+}
+
+async function transferUserUsdcToTreasury(input: {
+  wallet: FantasyWallet;
+  amount: number;
+}): Promise<string> {
+  const userSigner = toUserKeypair(input.wallet);
+  const treasury = getTreasuryKeypair();
+  const treasuryAta = await ensureTreasuryUsdcAta();
+  const userAta = new PublicKey(input.wallet.usdc_ata);
+  const decimals = await getUsdcDecimals();
+
+  const tx = new Transaction().add(
+    createTransferCheckedInstruction(
+      userAta,
+      getUsdcMint(),
+      treasuryAta,
+      userSigner.publicKey,
+      usdcToRaw(input.amount),
+      decimals
+    )
+  );
+  tx.feePayer = treasury.publicKey;
+
+  return sendAndConfirmTransaction(getConnection(), tx, [treasury, userSigner], {
+    commitment: SOLANA_COMMITMENT,
+  });
+}
+
 async function transferTreasuryUsdc(input: {
   destinationAddress: string;
   amount: number;
@@ -451,13 +520,9 @@ export async function syncFantasyWalletDeposits(
           amount: rawToUsdc(deltaRaw),
           amountRaw: deltaRaw,
         });
-      }
-
-      if (currentRawBalance > 0n) {
-        await sweepWalletToTreasury(item, currentRawBalance);
         await updateFantasyWalletObservedBalance({
           telegramId: item.telegram_id,
-          rawBalance: 0n,
+          rawBalance: currentRawBalance,
         });
       }
     } finally {
@@ -486,7 +551,13 @@ export async function processFantasyWalletWithdrawals(): Promise<void> {
       }
 
       try {
-        const transfer = await transferTreasuryUsdc({
+        const wallet = await getFantasyWalletByTelegramId(claimed.telegram_id);
+        if (!wallet) {
+          throw new Error("User wallet not found.");
+        }
+
+        const transfer = await transferUserUsdc({
+          fromWallet: wallet,
           destinationAddress: claimed.destination_address,
           amount: claimed.amount,
         });
@@ -519,4 +590,28 @@ export async function processFantasyWalletWithdrawals(): Promise<void> {
       activeWithdrawalIds.delete(pendingWithdrawal.id);
     }
   }
+}
+
+export async function transferUsdcForArenaEntry(input: {
+  telegramId: number;
+  amount: number;
+}): Promise<string> {
+  const wallet = await ensureFantasyWallet(input.telegramId);
+  return transferUserUsdcToTreasury({
+    wallet,
+    amount: input.amount,
+  });
+}
+
+export async function transferUsdcForPrizeWinning(input: {
+  telegramId: number;
+  amount: number;
+}): Promise<string> {
+  const wallet = await ensureFantasyWallet(input.telegramId);
+  return (
+    await transferTreasuryUsdc({
+      destinationAddress: wallet.owner_address,
+      amount: input.amount,
+    })
+  ).signature;
 }

@@ -72,6 +72,7 @@ import {
 } from "./fantasy-ui.ts";
 import { recordRevenueOnce } from "./db/revenue.ts";
 import { redis } from "./utils/rateLimit.ts";
+import { transferUsdcForArenaEntry, transferUsdcForPrizeWinning } from "./solana-wallet.ts";
 
 const tgApi = new Api(config.BOT_TOKEN);
 let cachedBotUsername: string | null = null;
@@ -1888,6 +1889,12 @@ export async function createFantasyLeagueGame(
   const code = await generateUniqueFantasyGameCode();
   await upsertUserProfile(creatorTelegramId);
 
+  // Transfer USDC from user wallet to treasury for arena entry
+  await transferUsdcForArenaEntry({
+    telegramId: creatorTelegramId,
+    amount: normalizedEntryFee,
+  });
+
   return createFantasyGameWithEntry({
     code,
     creatorTelegramId,
@@ -1904,6 +1911,17 @@ export async function joinFantasyLeagueGame(
   code: string
 ): Promise<FantasyGame> {
   await upsertUserProfile(telegramId);
+  const game = await getFantasyGameByCode(code.trim().toUpperCase());
+
+  if (!game) {
+    throw new Error("Arena not found.");
+  }
+
+  // Transfer USDC from user wallet to treasury for arena entry
+  await transferUsdcForArenaEntry({
+    telegramId,
+    amount: game.entry_fee,
+  });
 
   return joinFantasyGameWithEntry({
     code: code.trim().toUpperCase(),
@@ -2288,6 +2306,13 @@ export async function placeFantasyTradeFromCallbackData(input: {
   }
 
   try {
+    // Transfer USDC from user wallet to treasury for arena entry
+    await transferUsdcForArenaEntry({
+      telegramId: input.telegramId,
+      amount: stake,
+    });
+
+    // After USDC transfer succeeds, debit the balance in the ledger
     await placeFantasyTradeWithDebit({
       gameId: game.id,
       memberId: member.id,
@@ -2623,6 +2648,21 @@ export async function finalizeFantasyGames(): Promise<void> {
 
         if (!awarded) {
           continue;
+        }
+
+        // Transfer USDC from treasury to user wallet for prize winnings
+        try {
+          await transferUsdcForPrizeWinning({
+            telegramId: award.telegramId,
+            amount,
+          });
+        } catch (transferError) {
+          console.warn(
+            `[fantasy] Failed to transfer prize USDC for ${game.code}/${award.telegramId}:`,
+            transferError
+          );
+          // Don't fail the whole payout process if transfer fails
+          // The ledger is already credited, this is just on-chain settlement
         }
       } catch (error) {
         payoutFailed = true;
