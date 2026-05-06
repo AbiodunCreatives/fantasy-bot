@@ -4,14 +4,24 @@ import express from "express";
 import { Bot, type Context } from "grammy";
 
 import { registerAdminDashboard } from "./admin-dashboard.ts";
+import { getBtcChartMenuUrl, registerBtcChartMenuPage } from "./btc-chart-menu.ts";
 import {
+  handleBoard,
+  handleChart,
+  handleCreate,
+  handleFundNgn,
   handleFantasyLeagueUiAction,
   handleFantasyJoinConfirm,
   handleFantasyJoinDecline,
   handleFantasyLeagueTrade,
   handleFantasyTextInput,
+  handleHelp,
+  handleJoin,
   handleLeague,
+  handleLive,
   handleStart,
+  handleStatus,
+  handleWithdraw,
   handleWallet,
 } from "./bot/handlers/league.ts";
 import { config } from "./config.ts";
@@ -55,6 +65,7 @@ app.set("trust proxy", true);
 app.use(express.json({ limit: "100kb" }));
 app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 registerAdminDashboard(app);
+registerBtcChartMenuPage(app);
 
 bot.use(async (ctx, next) => {
   if (ctx.from && !ctx.from.is_bot) {
@@ -67,8 +78,17 @@ bot.use(async (ctx, next) => {
 });
 
 bot.command("start", wrap(handleStart));
+bot.command("help", wrap(handleHelp));
+bot.command("chart", wrap(handleChart));
 bot.command("league", wrap(handleLeague));
+bot.command("create", wrap(handleCreate));
+bot.command("join", wrap(handleJoin));
+bot.command("live", wrap(handleLive));
+bot.command("board", wrap(handleBoard));
+bot.command("status", wrap(handleStatus));
 bot.command("wallet", wrap(handleWallet));
+bot.command("fundngn", wrap(handleFundNgn));
+bot.command("withdraw", wrap(handleWithdraw));
 bot.callbackQuery(/^flt:/, wrap(handleFantasyLeagueTrade));
 bot.callbackQuery(/^(start|lobby|arena|funds|wallet):/, wrap(handleFantasyLeagueUiAction));
 bot.callbackQuery("fantasy:join:confirm", wrap(handleFantasyJoinConfirm));
@@ -288,14 +308,70 @@ async function main(): Promise<void> {
       description: "Open Bayse Arena and browse arenas",
     },
     {
+      command: "help",
+      description: "Show every bot command",
+    },
+    {
+      command: "chart",
+      description: "Open the BTC 15m chart link",
+    },
+    {
       command: "league",
       description: "Create, join, and view fantasy arenas",
+    },
+    {
+      command: "create",
+      description: "Create a new fantasy arena",
+    },
+    {
+      command: "join",
+      description: "Join an arena by code",
+    },
+    {
+      command: "live",
+      description: "View the live round for an arena",
+    },
+    {
+      command: "board",
+      description: "Open an arena leaderboard",
+    },
+    {
+      command: "status",
+      description: "View arena status details",
     },
     {
       command: "wallet",
       description: "View your Solana USDC wallet and withdraw",
     },
+    {
+      command: "fundngn",
+      description: "Create a Naira top-up order",
+    },
+    {
+      command: "withdraw",
+      description: "Withdraw USDC to a Solana wallet",
+    },
   ]);
+
+  const chartMenuUrl = getBtcChartMenuUrl();
+
+  if (chartMenuUrl) {
+    await bot.api.setChatMenuButton({
+      menu_button: {
+        type: "web_app",
+        text: "BTC Chart",
+        web_app: {
+          url: chartMenuUrl,
+        },
+      },
+    });
+  } else {
+    await bot.api.setChatMenuButton({
+      menu_button: {
+        type: "commands",
+      },
+    });
+  }
 
   startFantasyMonitor();
   startFantasySettlementMonitor();

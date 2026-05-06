@@ -1,9 +1,9 @@
-import { InlineKeyboard, InputFile } from "grammy";
+import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { PublicKey } from "@solana/web3.js";
 
 import { getCurrentRoundSnapshot } from "../../bayse-market.ts";
-import { formatBtcChartCaption, getBtcChartImage } from "../../btc-chart.ts";
+import { getBtcChartMenuUrl } from "../../btc-chart-menu.ts";
 import { config } from "../../config.ts";
 import { getBalance } from "../../db/balances.ts";
 import {
@@ -65,8 +65,6 @@ const ARENA_TRADE_PREFIX = "arena:trade:";
 const ARENA_REFRESH_PREFIX = "arena:refresh:";
 const ARENA_CATCH_UP_PREFIX = "arena:catch:";
 const ARENA_REMIND_PREFIX = "arena:remind:";
-const BTC_CHART_OPEN = "arena:chart:btc";
-const BTC_CHART_REFRESH = "arena:chart:btc:refresh";
 const ARENA_JOIN_CONFIRM = "fantasy:join:confirm";
 const ARENA_JOIN_DECLINE = "fantasy:join:decline";
 const FUNDS_ADD = "funds:add";
@@ -203,10 +201,15 @@ function buildHowItWorksKeyboard(): InlineKeyboard {
 }
 
 function buildBtcChartKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text("🔄 Refresh", BTC_CHART_REFRESH)
-    .row()
-    .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
+  const url = getBtcChartMenuUrl();
+  const keyboard = new InlineKeyboard();
+
+  if (url) {
+    keyboard.url("Open chart", url).row();
+  }
+
+  keyboard.text("Browse arenas", ARENA_BACK_TO_LOBBY);
+  return keyboard;
 }
 
 function buildStartOnboardingText(input: {
@@ -223,18 +226,10 @@ function buildStartOnboardingText(input: {
 }
 
 function buildStartOnboardingKeyboard(): InlineKeyboard {
-  const keyboard = new InlineKeyboard()
+  return new InlineKeyboard()
     .text("Browse Arenas", START_LOBBY)
     .text("Wallet", START_WALLET)
     .row()
-    .text("📊 BTC Chart", BTC_CHART_OPEN)
-    .row()
-    .text("+ Create Arena", ARENA_CREATE);
-
-  return keyboard;
-
-  return new InlineKeyboard()
-    .text("🏟 Browse Arenas", START_LOBBY)
     .text("+ Create Arena", ARENA_CREATE);
 }
 
@@ -461,7 +456,6 @@ function buildArenaLobbyKeyboard(input: {
     }
   }
 
-  keyboard.text("📊 BTC Chart", BTC_CHART_OPEN).row();
   keyboard.text("+ Create New Arena", ARENA_CREATE);
 
   if (input.liveOnly) {
@@ -814,8 +808,6 @@ function buildArenaLiveKeyboard(input: {
     keyboard.row().text("⬆ How to catch #1", `${ARENA_CATCH_UP_PREFIX}${input.code}`);
   }
 
-  keyboard.row().text("📊 BTC Chart", BTC_CHART_OPEN);
-
   keyboard
     .row()
     .text("🔄 Refresh live", `${ARENA_LIVE_PREFIX}${input.code}`)
@@ -834,8 +826,6 @@ function buildArenaBoardKeyboard(input: {
   if (input.canCatchUp) {
     keyboard.text("⬆ How to catch #1", `${ARENA_CATCH_UP_PREFIX}${input.code}`);
   }
-
-  keyboard.row().text("📊 BTC Chart", BTC_CHART_OPEN);
 
   keyboard
     .text("🔄 Refresh", `${ARENA_REFRESH_PREFIX}${input.code}`)
@@ -873,15 +863,17 @@ function buildLeagueHelpText(): string {
     "",
     "Commands:",
     "/start - Open the welcome screen and lobby",
+    "/help - Show the command guide",
+    "/chart - Open the BTC 15m chart link",
     "/wallet - View your Solana USDC wallet and deposit address",
-    "/wallet fund-ngn 10000 - Create a Naira top-up order via PajCash",
-    "/wallet withdraw 5 ADDRESS - Withdraw USDC to a Solana wallet",
+    "/fundngn 10000 - Create a Naira top-up order via PajCash",
+    "/withdraw 5 ADDRESS - Withdraw USDC to a Solana wallet",
     "/league - See your active arenas or browse the lobby",
-    "/league create 5 12 - Create a 12h BTC fantasy arena with $5 entry",
-    "/league join ABC123 - Review and join an arena by code",
-    "/league board ABC123 - View the arena leaderboard",
-    "/league live ABC123 - View the current BTC round and countdown",
-    "/league status ABC123 - View arena details",
+    "/create 5 12 - Create a 12h BTC fantasy arena with $5 entry",
+    "/join ABC123 - Review and join an arena by code",
+    "/live ABC123 - View the current BTC round and countdown",
+    "/board ABC123 - View the arena leaderboard",
+    "/status ABC123 - View arena details",
     "",
     "Rules:",
     "- BTC only in v1",
@@ -897,6 +889,40 @@ function buildLeagueHelpText(): string {
     "",
     "Arena balances stay virtual during play, but funding and payouts are real USDC.",
   ].join("\n");
+}
+
+function buildChartCommandText(): string {
+  return [
+    "BTC 15m Chart",
+    "",
+    "Use the bot menu button to open the live BTC chart.",
+    "If the menu button is not visible yet, use the button below.",
+  ].join("\n");
+}
+
+function buildChartCommandKeyboard(): InlineKeyboard | undefined {
+  const url = getBtcChartMenuUrl();
+
+  if (!url) {
+    return undefined;
+  }
+
+  return new InlineKeyboard().url("Open BTC 15m Chart", url);
+}
+
+async function replyChartCommand(ctx: Context): Promise<void> {
+  const keyboard = buildChartCommandKeyboard();
+
+  if (keyboard) {
+    await ctx.reply(buildChartCommandText(), {
+      reply_markup: keyboard,
+    });
+    return;
+  }
+
+  await ctx.reply(
+    "BTC chart menu is not available right now. Set WEBHOOK_URL so the bot can expose the chart page."
+  );
 }
 
 async function replyArenaLookupError(ctx: Context, error: unknown): Promise<void> {
@@ -1109,47 +1135,6 @@ async function editTradePromptMessage(
   }
 
   await ctx.reply(text);
-}
-
-async function sendBtcChartMessage(
-  ctx: Context,
-  options?: { forceRefresh?: boolean }
-): Promise<void> {
-  const chart = await getBtcChartImage({
-    forceRefresh: options?.forceRefresh,
-  });
-  const photo = new InputFile(chart.buffer, "btc-usdt-15m.png");
-  const caption = formatBtcChartCaption({
-    currentPrice: chart.currentPrice,
-    updatedAt: chart.updatedAt,
-  });
-  const message = ctx.callbackQuery?.message;
-  const canEditExistingPhoto =
-    Boolean(options?.forceRefresh) &&
-    Boolean(message && "photo" in message && Array.isArray(message.photo));
-
-  if (canEditExistingPhoto) {
-    try {
-      await ctx.editMessageMedia(
-        {
-          type: "photo",
-          media: photo,
-          caption,
-        },
-        {
-          reply_markup: buildBtcChartKeyboard(),
-        }
-      );
-      return;
-    } catch (error) {
-      console.warn("[chart] Failed to refresh BTC chart in place:", error);
-    }
-  }
-
-  await ctx.replyWithPhoto(photo, {
-    caption,
-    reply_markup: buildBtcChartKeyboard(),
-  });
 }
 
 async function renderArenaLobby(
@@ -1679,16 +1664,6 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
     return;
   }
 
-  if (data === BTC_CHART_OPEN) {
-    await sendBtcChartMessage(ctx);
-    return;
-  }
-
-  if (data === BTC_CHART_REFRESH) {
-    await sendBtcChartMessage(ctx, { forceRefresh: true });
-    return;
-  }
-
   if (data.startsWith(ARENA_TRADE_PREFIX)) {
     try {
       const prompt = await prepareFantasyTradePromptForArena({
@@ -1977,6 +1952,147 @@ export async function handleWallet(ctx: Context): Promise<void> {
   await ctx.reply(buildWalletCommandHelpText(), {
     reply_markup: buildWalletKeyboard(),
   });
+}
+
+export async function handleFundNgn(ctx: Context): Promise<void> {
+  if (!ctx.from) {
+    return;
+  }
+
+  const amount = Number.parseFloat((ctx.message?.text ?? "").split(/\s+/)[1] ?? "");
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await ctx.reply(buildWalletNairaHelpText(), {
+      reply_markup: buildWalletKeyboard(),
+    });
+    return;
+  }
+
+  try {
+    const order = await createFantasyPajCashOnramp({
+      telegramId: ctx.from.id,
+      fiatAmount: amount,
+    });
+
+    await ctx.reply(
+      buildWalletNairaOrderText({
+        orderId: order.order_id,
+        fiatAmount: order.fiat_amount,
+        expectedUsdcAmount: order.expected_usdc_amount,
+        bankName: order.bank_name ?? "PAJ CASH",
+        accountName: order.account_name ?? "PAJ CASH",
+        accountNumber: order.account_number ?? "Unavailable",
+      }),
+      {
+        reply_markup: buildWalletKeyboard(),
+      }
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Something went wrong.";
+    await ctx.reply(message, {
+      reply_markup: buildWalletKeyboard(),
+    });
+  }
+}
+
+export async function handleWithdraw(ctx: Context): Promise<void> {
+  if (!ctx.from) {
+    return;
+  }
+
+  const args = (ctx.message?.text ?? "").split(/\s+/).slice(1);
+  const amount = Number.parseFloat(args[0] ?? "");
+  const destinationAddress = args[1]?.trim() ?? "";
+
+  if (!Number.isFinite(amount) || amount <= 0 || !destinationAddress) {
+    await ctx.reply(buildWalletWithdrawHelpText(), {
+      reply_markup: buildWalletKeyboard(),
+    });
+    return;
+  }
+
+  if (!isValidSolanaAddress(destinationAddress)) {
+    await ctx.reply("That Solana address looks invalid. Please check it and try again.");
+    return;
+  }
+
+  try {
+    await requestFantasyWalletWithdrawal({
+      telegramId: ctx.from.id,
+      destinationAddress,
+      amount,
+    });
+    await processFantasyWalletWithdrawals();
+    await ctx.reply(
+      buildWalletWithdrawalRequestedText({
+        amount,
+        destinationAddress,
+      }),
+      {
+        reply_markup: buildWalletKeyboard(),
+      }
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Something went wrong.";
+    const normalized = message.toLowerCase();
+
+    if (normalized.includes("insufficient wallet balance")) {
+      const balance = await getBalance(ctx.from.id);
+      await ctx.reply(buildArenaInsufficientBalanceText(amount, balance), {
+        reply_markup: buildInsufficientBalanceKeyboard(),
+      });
+      return;
+    }
+
+    await ctx.reply(message);
+  }
+}
+
+export async function handleHelp(ctx: Context): Promise<void> {
+  await ctx.reply(buildLeagueHelpText(), {
+    ...(buildChartCommandKeyboard()
+      ? { reply_markup: buildChartCommandKeyboard() }
+      : {}),
+  });
+}
+
+export async function handleChart(ctx: Context): Promise<void> {
+  await replyChartCommand(ctx);
+}
+
+export async function handleCreate(ctx: Context): Promise<void> {
+  await handleLeagueAlias(ctx, "create");
+}
+
+export async function handleJoin(ctx: Context): Promise<void> {
+  await handleLeagueAlias(ctx, "join");
+}
+
+export async function handleLive(ctx: Context): Promise<void> {
+  await handleLeagueAlias(ctx, "live");
+}
+
+export async function handleBoard(ctx: Context): Promise<void> {
+  await handleLeagueAlias(ctx, "board");
+}
+
+export async function handleStatus(ctx: Context): Promise<void> {
+  await handleLeagueAlias(ctx, "status");
+}
+
+async function handleLeagueAlias(
+  ctx: Context,
+  subcommand: "create" | "join" | "live" | "board" | "status"
+): Promise<void> {
+  const messageText = ctx.message?.text ?? "";
+  const command = messageText.split(/\s+/)[0] ?? "";
+  const args = messageText.slice(command.length).trim();
+
+  if (ctx.message) {
+    ctx.message.text = `/league ${subcommand}${args ? ` ${args}` : ""}`;
+  }
+
+  await handleLeague(ctx);
 }
 
 export async function handleLeague(ctx: Context): Promise<void> {
