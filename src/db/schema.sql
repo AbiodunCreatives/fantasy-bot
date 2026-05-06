@@ -153,6 +153,33 @@ CREATE TABLE IF NOT EXISTS fantasy_wallet_withdrawals (
   completed_at TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS fantasy_pajcash_onramps (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id TEXT NOT NULL UNIQUE,
+  telegram_id BIGINT REFERENCES fantasy_users (telegram_id) ON DELETE SET NULL,
+  recipient_address TEXT,
+  sender TEXT,
+  mint TEXT,
+  chain TEXT NOT NULL DEFAULT 'SOLANA',
+  currency TEXT NOT NULL DEFAULT 'NGN',
+  bank_name TEXT,
+  account_name TEXT,
+  account_number TEXT,
+  fiat_amount NUMERIC(20,2),
+  expected_usdc_amount NUMERIC(20,6),
+  actual_usdc_amount NUMERIC(20,6),
+  rate NUMERIC(20,6),
+  fee NUMERIC(20,6),
+  status TEXT NOT NULL DEFAULT 'INIT',
+  transaction_type TEXT,
+  paj_signature TEXT,
+  raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  paid_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_fantasy_games_status_start_at
   ON fantasy_games (status, start_at);
 
@@ -176,6 +203,12 @@ CREATE INDEX IF NOT EXISTS idx_fantasy_wallet_ledger_telegram_id_created_at
 
 CREATE INDEX IF NOT EXISTS idx_fantasy_wallet_withdrawals_status_requested_at
   ON fantasy_wallet_withdrawals (status, requested_at);
+
+CREATE INDEX IF NOT EXISTS idx_fantasy_pajcash_onramps_telegram_id_created_at
+  ON fantasy_pajcash_onramps (telegram_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_fantasy_pajcash_onramps_status_updated_at
+  ON fantasy_pajcash_onramps (status, updated_at DESC);
 
 CREATE OR REPLACE FUNCTION create_fantasy_game_with_entry(
   p_code TEXT,

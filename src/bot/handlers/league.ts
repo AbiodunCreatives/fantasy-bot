@@ -50,6 +50,7 @@ import {
   requestFantasyWalletWithdrawal,
   syncFantasyWalletDeposits,
 } from "../../solana-wallet.ts";
+import { createFantasyPajCashOnramp } from "../../pajcash.ts";
 
 const START_HOW_IT_WORKS = "start:how";
 const START_LOBBY = "start:lobby";
@@ -73,6 +74,7 @@ const FUNDS_CUSTOM = "funds:custom";
 const FUNDS_BACK_TO_LOBBY = "funds:lobby";
 const WALLET_OPEN = "wallet:open";
 const WALLET_REFRESH = "wallet:refresh";
+const WALLET_NAIRA_HELP = "wallet:naira";
 const WALLET_WITHDRAW_HELP = "wallet:withdraw";
 const WALLET_BACK = "wallet:back";
 
@@ -103,6 +105,13 @@ function formatUsdc(value: number): string {
     minimumFractionDigits,
     maximumFractionDigits: 6,
   })} USDC`;
+}
+
+function formatNaira(value: number): string {
+  return `NGN ${roundMoney(value).toLocaleString("en-US", {
+    minimumFractionDigits: Number.isInteger(roundMoney(value)) ? 0 : 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 function abbreviateAddress(value: string): string {
@@ -589,6 +598,7 @@ function buildCreateInsufficientKeyboard(): InlineKeyboard {
 function buildAddFundsText(): string {
   return [
     "Open /wallet to view your Solana USDC deposit address.",
+    "You can also use /wallet fund-ngn 10000 to top up from a Naira bank transfer via PajCash.",
     "Deposits credit your in-bot balance and withdrawals pay out to any Solana wallet.",
   ].join("\n");
 }
@@ -641,6 +651,17 @@ function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSumm
           const destination = abbreviateAddress(entry.destination_address);
           return `${entry.status.toUpperCase()}  ${formatUsdc(entry.amount)}  ->  ${destination}`;
         });
+  const onrampLines =
+    summary.recentOnramps.length === 0
+      ? ["No naira top-ups yet."]
+      : summary.recentOnramps.slice(0, 3).map((entry) => {
+          const amount =
+            entry.actual_usdc_amount > 0
+              ? entry.actual_usdc_amount
+              : entry.expected_usdc_amount;
+
+          return `${entry.status.toUpperCase()}  ${formatNaira(entry.fiat_amount)}  ->  ${formatUsdc(amount)}`;
+        });
 
   return [
     "Solana USDC Wallet",
@@ -653,21 +674,51 @@ function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSumm
     "",
     "Send only native USDC on Solana to this address.",
     "Arena entries debit this balance. Winnings return here.",
+    "For Naira top-ups, use /wallet fund-ngn 10000.",
     "",
     "Recent activity:",
     ...ledgerLines,
     "",
     "Recent withdrawals:",
     ...withdrawalLines,
+    "",
+    "Recent Naira top-ups:",
+    ...onrampLines,
   ].join("\n");
 }
 
 function buildWalletKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text("Refresh deposits", WALLET_REFRESH)
+    .text("Fund with Naira", WALLET_NAIRA_HELP)
+    .row()
     .text("Withdraw help", WALLET_WITHDRAW_HELP)
     .row()
     .text("Browse arenas", WALLET_BACK);
+}
+
+function buildWalletNairaHelpText(): string {
+  return [
+    "Fund with Naira",
+    "",
+    "Use: /wallet fund-ngn <amount_ngn>",
+    "Example:",
+    "/wallet fund-ngn 10000",
+    "",
+    "Bayse will create a PajCash bank transfer order for you.",
+    "Your in-bot balance updates only after native USDC lands in your Solana wallet and the bot sees the deposit.",
+  ].join("\n");
+}
+
+function buildWalletCommandHelpText(): string {
+  return [
+    "Wallet commands",
+    "",
+    "/wallet",
+    "/wallet refresh",
+    "/wallet fund-ngn 10000",
+    "/wallet withdraw 5 SOLANA_ADDRESS",
+  ].join("\n");
 }
 
 function buildWalletWithdrawHelpText(): string {
@@ -679,6 +730,30 @@ function buildWalletWithdrawHelpText(): string {
     "",
     "Example:",
     "/wallet withdraw 5 FILL_IN_SOLANA_ADDRESS",
+  ].join("\n");
+}
+
+function buildWalletNairaOrderText(input: {
+  orderId: string;
+  fiatAmount: number;
+  expectedUsdcAmount: number;
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+}): string {
+  return [
+    "Naira top-up ready.",
+    "",
+    `Order ID: ${input.orderId}`,
+    `Send: ${formatNaira(input.fiatAmount)}`,
+    `Expected credit: ${formatUsdc(input.expectedUsdcAmount)}`,
+    "",
+    "Transfer to:",
+    `${input.accountName}`,
+    `${input.accountNumber}`,
+    `${input.bankName}`,
+    "",
+    "After PajCash completes the order and USDC lands in your Solana wallet, Bayse will credit your in-bot balance.",
   ].join("\n");
 }
 
@@ -799,6 +874,7 @@ function buildLeagueHelpText(): string {
     "Commands:",
     "/start - Open the welcome screen and lobby",
     "/wallet - View your Solana USDC wallet and deposit address",
+    "/wallet fund-ngn 10000 - Create a Naira top-up order via PajCash",
     "/wallet withdraw 5 ADDRESS - Withdraw USDC to a Solana wallet",
     "/league - See your active arenas or browse the lobby",
     "/league create 5 12 - Create a 12h BTC fantasy arena with $5 entry",
@@ -1665,6 +1741,11 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
     return;
   }
 
+  if (data === WALLET_NAIRA_HELP) {
+    await editTradePromptMessage(ctx, buildWalletNairaHelpText(), buildWalletKeyboard());
+    return;
+  }
+
   if (data === ARENA_CREATE) {
     const balance = await getBalance(ctx.from.id);
     await editTradePromptMessage(
@@ -1854,7 +1935,46 @@ export async function handleWallet(ctx: Context): Promise<void> {
     return;
   }
 
-  await ctx.reply(buildWalletWithdrawHelpText(), {
+  if (subcommand === "fund-ngn") {
+    const amount = Number.parseFloat(args[1] ?? "");
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      await ctx.reply(buildWalletNairaHelpText(), {
+        reply_markup: buildWalletKeyboard(),
+      });
+      return;
+    }
+
+    try {
+      const order = await createFantasyPajCashOnramp({
+        telegramId: ctx.from.id,
+        fiatAmount: amount,
+      });
+
+      await ctx.reply(
+        buildWalletNairaOrderText({
+          orderId: order.order_id,
+          fiatAmount: order.fiat_amount,
+          expectedUsdcAmount: order.expected_usdc_amount,
+          bankName: order.bank_name ?? "PAJ CASH",
+          accountName: order.account_name ?? "PAJ CASH",
+          accountNumber: order.account_number ?? "Unavailable",
+        }),
+        {
+          reply_markup: buildWalletKeyboard(),
+        }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Something went wrong.";
+      await ctx.reply(message, {
+        reply_markup: buildWalletKeyboard(),
+      });
+    }
+
+    return;
+  }
+
+  await ctx.reply(buildWalletCommandHelpText(), {
     reply_markup: buildWalletKeyboard(),
   });
 }

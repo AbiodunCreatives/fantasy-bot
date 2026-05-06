@@ -139,6 +139,22 @@ export async function getFantasyWalletByTelegramId(
   return data ? normalizeFantasyWallet(data as FantasyWalletRow) : null;
 }
 
+export async function getFantasyWalletByOwnerAddress(
+  ownerAddress: string
+): Promise<FantasyWallet | null> {
+  const { data, error } = await supabase
+    .from("fantasy_wallets")
+    .select("*")
+    .eq("owner_address", ownerAddress)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? normalizeFantasyWallet(data as FantasyWalletRow) : null;
+}
+
 export async function listFantasyWallets(): Promise<FantasyWallet[]> {
   const { data, error } = await supabase
     .from("fantasy_wallets")

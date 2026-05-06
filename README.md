@@ -42,6 +42,52 @@ Run a single bot instance for production or beta so wallet sweeps and withdrawal
 5. Install dependencies with `pnpm install`.
 6. Run `pnpm start`.
 
+## Dashboard only mode
+
+If you only want the admin dashboard and do not need the Telegram bot running, you can start the app in dashboard-only mode with a smaller env set:
+
+- `DASHBOARD_ONLY_MODE=true`
+- `SUPABASE_URL=...`
+- `SUPABASE_SERVICE_ROLE_KEY=...`
+- `ADMIN_DASHBOARD_TOKEN=...`
+- `HEALTH_CHECK_TOKEN=...`
+- `PORT=3000`
+
+Then run `pnpm start` and open:
+
+- `http://localhost:3000/admin/dashboard?token=YOUR_ADMIN_DASHBOARD_TOKEN`
+- `http://localhost:3000/admin/api/dashboard?token=YOUR_ADMIN_DASHBOARD_TOKEN`
+
+## PajCash onramp
+
+This repo now includes a first-pass PajCash NGN onramp integration for the wallet flow.
+
+Required env vars:
+
+- `PAJCASH_ENV=production` or `staging`
+- `PAJCASH_API_KEY=...`
+- `PAJCASH_SESSION_RECIPIENT=your_business_email_or_phone`
+- `PAJCASH_SESSION_TOKEN=...`
+- `PAJCASH_SESSION_EXPIRES_AT=...`
+- `PAJCASH_WEBHOOK_BASE_URL=https://your-public-app-url`
+- `PAJCASH_WEBHOOK_PATH_SECRET=your-long-random-secret`
+
+Before turning it on in an existing deployment, rerun [src/db/schema.sql](./src/db/schema.sql) in Supabase so the `fantasy_pajcash_onramps` table exists.
+
+To request and verify a PajCash OTP session:
+
+- `pnpm pajcash:session`
+
+If `PAJCASH_OTP` is not set, the script requests an OTP.
+After you receive the OTP, set `PAJCASH_OTP=...` in `.env` and run the script again.
+It will print the `PAJCASH_SESSION_TOKEN` and `PAJCASH_SESSION_EXPIRES_AT` values to save into `.env`.
+
+End-user command:
+
+- `/wallet fund-ngn 10000`
+
+This creates a PajCash bank transfer order and credits the in-bot wallet only after native Solana USDC actually lands in the user wallet and is picked up by the existing deposit sync.
+
 ## Render notes
 
 Use Node 22 and point the service at the source entry with a TypeScript-aware command.

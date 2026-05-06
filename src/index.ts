@@ -3,6 +3,7 @@ import { createServer } from "http";
 import express from "express";
 import { Bot, type Context } from "grammy";
 
+import { registerAdminDashboard } from "./admin-dashboard.ts";
 import {
   handleFantasyLeagueUiAction,
   handleFantasyJoinConfirm,
@@ -17,6 +18,7 @@ import { config } from "./config.ts";
 import { supabase } from "./db/client.ts";
 import { upsertUserProfile } from "./db/users.ts";
 import { startFantasyMonitor, stopFantasyMonitor } from "./fantasy-monitor.ts";
+import { reconcilePajCashWebhook } from "./pajcash.ts";
 import {
   startFantasySettlementMonitor,
   stopFantasySettlementMonitor,
@@ -31,6 +33,7 @@ const bot = new Bot(config.BOT_TOKEN);
 const app = express();
 
 app.use(express.json({ limit: "100kb" }));
+registerAdminDashboard(app);
 
 bot.use(async (ctx, next) => {
   if (ctx.from && !ctx.from.is_bot) {
@@ -144,6 +147,29 @@ app.get("/health", async (req, res) => {
   });
 });
 
+app.post("/webhook/pajcash/:secret", async (req, res) => {
+  const configuredSecret = config.PAJCASH_WEBHOOK_PATH_SECRET?.trim() ?? "";
+
+  if (!configuredSecret) {
+    res.sendStatus(404);
+    return;
+  }
+
+  if (req.params["secret"] !== configuredSecret) {
+    console.warn("[pajcash] Rejected webhook with invalid path secret");
+    res.sendStatus(403);
+    return;
+  }
+
+  try {
+    await reconcilePajCashWebhook(req.body as Record<string, unknown> as any);
+    res.status(200).json({ received: true });
+  } catch (error) {
+    console.error("[pajcash] Failed to reconcile webhook:", error);
+    res.status(200).json({ received: true });
+  }
+});
+
 app.post("/webhook/:secret", (req, res) => {
   if (req.params["secret"] !== config.WEBHOOK_PATH_SECRET) {
     console.warn("[webhook] Rejected request with invalid path secret");
@@ -213,6 +239,21 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 
 async function main(): Promise<void> {
   console.log("[server] Starting fantasy bot...");
+
+  if (config.DASHBOARD_ONLY_MODE) {
+    server.listen(config.PORT, () => {
+      console.log(
+        `[server] Dashboard-only mode enabled.\n` +
+          `[server] Listening on port ${config.PORT}\n` +
+          `[server] Ready:\n` +
+          `  GET /health\n` +
+          `  GET /admin/dashboard\n` +
+          `  GET /admin/api/dashboard`
+      );
+    });
+
+    return;
+  }
 
   await redis.ping();
   console.log("[redis] Startup ping OK.");

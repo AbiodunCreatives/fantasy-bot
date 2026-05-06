@@ -20,6 +20,10 @@ import {
 
 import { config } from "./config.ts";
 import { getBalance, creditBalance } from "./db/balances.ts";
+import {
+  listRecentPajCashOnramps,
+  type PajCashOnramp,
+} from "./db/pajcash.ts";
 import { upsertUserProfile } from "./db/users.ts";
 import {
   completeFantasyWalletWithdrawal,
@@ -46,6 +50,7 @@ export interface FantasyWalletSummary {
   balance: number;
   recentLedger: FantasyWalletLedgerEntry[];
   recentWithdrawals: FantasyWalletWithdrawal[];
+  recentOnramps: PajCashOnramp[];
 }
 
 let cachedConnection: Connection | null = null;
@@ -374,10 +379,11 @@ export async function getFantasyWalletSummary(
   telegramId: number
 ): Promise<FantasyWalletSummary> {
   const wallet = await ensureFantasyWallet(telegramId);
-  const [balance, recentLedger, recentWithdrawals] = await Promise.all([
+  const [balance, recentLedger, recentWithdrawals, recentOnramps] = await Promise.all([
     getBalance(telegramId),
     listFantasyWalletLedger(telegramId, 6),
     listRecentFantasyWalletWithdrawals(telegramId, 4),
+    listRecentPajCashOnramps(telegramId, 3),
   ]);
 
   return {
@@ -385,6 +391,7 @@ export async function getFantasyWalletSummary(
     balance,
     recentLedger,
     recentWithdrawals,
+    recentOnramps,
   };
 }
 
