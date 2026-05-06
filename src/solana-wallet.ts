@@ -401,6 +401,11 @@ async function transferTreasuryUsdc(input: {
   };
 }
 
+async function ensureUserUsdcAta(wallet: FantasyWallet): Promise<void> {
+  const treasury = getTreasuryKeypair();
+  await ensureAssociatedTokenAccount(new PublicKey(wallet.owner_address), treasury);
+}
+
 export async function ensureFantasyWallet(
   telegramId: number
 ): Promise<FantasyWallet> {
@@ -409,13 +414,10 @@ export async function ensureFantasyWallet(
   const existing = await getFantasyWalletByTelegramId(telegramId);
 
   if (existing) {
-    await ensureTreasuryUsdcAta();
-    await ensureAssociatedTokenAccount(new PublicKey(existing.owner_address), getTreasuryKeypair());
     return existing;
   }
 
   const wallet = Keypair.generate();
-  const treasury = getTreasuryKeypair();
   const ownerAddress = wallet.publicKey.toBase58();
   const usdcAta = getAssociatedUsdcAddress(wallet.publicKey).toBase58();
   const encryptedSecretKey = encryptSecretKey(wallet.secretKey);
@@ -429,7 +431,6 @@ export async function ensureFantasyWallet(
     });
 
     await ensureTreasuryUsdcAta();
-    await ensureAssociatedTokenAccount(wallet.publicKey, treasury);
     return created;
   } catch (error) {
     if (isUniqueViolation(error as { code?: string } | null)) {
@@ -597,6 +598,7 @@ export async function transferUsdcForArenaEntry(input: {
   amount: number;
 }): Promise<string> {
   const wallet = await ensureFantasyWallet(input.telegramId);
+  await ensureUserUsdcAta(wallet);
   return transferUserUsdcToTreasury({
     wallet,
     amount: input.amount,
@@ -608,6 +610,7 @@ export async function transferUsdcForPrizeWinning(input: {
   amount: number;
 }): Promise<string> {
   const wallet = await ensureFantasyWallet(input.telegramId);
+  await ensureUserUsdcAta(wallet);
   return (
     await transferTreasuryUsdc({
       destinationAddress: wallet.owner_address,
