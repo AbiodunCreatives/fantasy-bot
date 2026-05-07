@@ -189,7 +189,7 @@ function buildArenaInsufficientBalanceText(
 
 function buildStartWelcomeText(): string {
   return [
-    "Bayse Arena",
+    "HeadlineOdds Arena",
     "",
     "BTC fantasy trading with Solana USDC funding.",
     "Each user gets a separate in-bot Solana wallet for deposits and withdrawals.",
@@ -632,8 +632,6 @@ function buildCustomFundsPromptText(): string {
 
 function buildFundsAddedText(amount: number, balance: number): string {
   return [
-    "✅ Deposit Credited",
-    "",
     `Wallet balance: ${formatUsdc(balance)}`,
     "",
     "Your deposit has been credited.",
@@ -1258,7 +1256,7 @@ function formatTradeDirectionLabel(direction: "UP" | "DOWN"): string {
 
 function buildTradeLockedText(result: FantasyTradePlacementResult): string {
   return [
-    `✅ Round ${result.roundNumber} locked in - ${result.game.code}`,
+    `Round ${result.roundNumber} locked in - ${result.game.code}`,
     "",
     `Direction: ${formatTradeDirectionLabel(result.direction)}`,
     `Stake: ${formatMoney(result.stake)}`,

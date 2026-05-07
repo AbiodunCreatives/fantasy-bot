@@ -56,6 +56,10 @@ const envSchema = z.object({
   WEBHOOK_SECRET: optionalString,
   HEALTH_CHECK_TOKEN: optionalString,
   ADMIN_DASHBOARD_TOKEN: optionalString,
+  ADMIN_USER_ID: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().positive().optional()
+  ),
   PAJCASH_ENV: z
     .enum(["staging", "production", "local"])
     .default("production"),
