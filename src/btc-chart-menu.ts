@@ -126,7 +126,7 @@ function renderBtcChartMenuPage(): string {
     '<section class="hero">',
     '<div class="badge">Live BTC 15m market view</div>',
     "<h1>BTC / USD 15m Chart</h1>",
-    "<p>Use this quick chart view from the Telegram menu while trading or watching Bayse Arena rounds.</p>",
+    "<p>Use this quick chart view from the Telegram menu while trading or watching HeadlineOdds Arena rounds.</p>",
     '<div class="chart-shell">',
     '<div class="tradingview-widget-container chart-frame">',
     '<div id="tradingview_btc_chart" class="chart-frame"></div>',

@@ -189,7 +189,7 @@ function buildArenaInsufficientBalanceText(
 
 function buildStartWelcomeText(): string {
   return [
-    "Bayse Arena",
+    "HeadlineOdds Arena",
     "",
     "BTC fantasy trading with Solana USDC funding.",
     "Each user gets a separate in-bot Solana wallet for deposits and withdrawals.",
