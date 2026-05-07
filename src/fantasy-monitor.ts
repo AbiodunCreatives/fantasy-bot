@@ -14,21 +14,31 @@ async function runFantasyMonitorTick(): Promise<void> {
 
   monitorInFlight = true;
 
+  // Watchdog: timeout after 30 seconds
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Fantasy monitor tick timed out after 30 seconds')), 30000);
+  });
+
   try {
-    const snapshot = await getCurrentRoundSnapshot(FANTASY_ASSET);
+    await Promise.race([
+      (async () => {
+        const snapshot = await getCurrentRoundSnapshot(FANTASY_ASSET);
 
-    if (!snapshot) {
-      return;
-    }
+        if (!snapshot) {
+          return;
+        }
 
-    if (!snapshot.pricing) {
-      console.warn(
-        `[fantasy-monitor] Missing round pricing for ${snapshot.round.slug} (${snapshot.round.eventId}).`
-      );
-      return;
-    }
+        if (!snapshot.pricing) {
+          console.warn(
+            `[fantasy-monitor] Missing round pricing for ${snapshot.round.slug} (${snapshot.round.eventId}).`
+          );
+          return;
+        }
 
-    await processFantasyLeagueRound(snapshot.round, snapshot.pricing);
+        await processFantasyLeagueRound(snapshot.round, snapshot.pricing);
+      })(),
+      timeoutPromise
+    ]);
   } catch (error) {
     console.error("[fantasy-monitor] Tick failed:", error);
   } finally {

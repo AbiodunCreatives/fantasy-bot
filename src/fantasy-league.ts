@@ -72,7 +72,7 @@ import {
 } from "./fantasy-ui.ts";
 import { recordRevenueOnce } from "./db/revenue.ts";
 import { redis } from "./utils/rateLimit.ts";
-import { transferUsdcForArenaEntry, transferUsdcForPrizeWinning } from "./solana-wallet.ts";
+import { transferUsdcForArenaEntry, transferUsdcForPrizeWinning, transferUsdcFromTreasury } from "./solana-wallet.ts";
 
 const tgApi = new Api(config.BOT_TOKEN);
 let cachedBotUsername: string | null = null;
@@ -1926,21 +1926,38 @@ export async function createFantasyLeagueGame(
   const code = await generateUniqueFantasyGameCode();
   await upsertUserProfile(creatorTelegramId);
 
-  // Transfer USDC from user wallet to treasury for arena entry
-  await transferUsdcForArenaEntry({
-    telegramId: creatorTelegramId,
-    amount: normalizedEntryFee,
-  });
+  try {
+    // Transfer USDC from user wallet to treasury for arena entry
+    await transferUsdcForArenaEntry({
+      telegramId: creatorTelegramId,
+      amount: normalizedEntryFee,
+    });
 
-  return createFantasyGameWithEntry({
-    code,
-    creatorTelegramId,
-    entryFee: normalizedEntryFee,
-    virtualStartBalance,
-    startAt,
-    endAt,
-    commissionRate: FANTASY_COMMISSION_RATE,
-  });
+    // After USDC transfer succeeds, create the game in the database
+    return await createFantasyGameWithEntry({
+      code,
+      creatorTelegramId,
+      entryFee: normalizedEntryFee,
+      virtualStartBalance,
+      startAt,
+      endAt,
+      commissionRate: FANTASY_COMMISSION_RATE,
+    });
+  } catch (error) {
+    // If database operation fails, refund the USDC transfer
+    try {
+      await transferUsdcFromTreasury({
+        telegramId: creatorTelegramId,
+        amount: normalizedEntryFee,
+      });
+    } catch (refundError) {
+      console.error(
+        `[fantasy] Failed to refund USDC after create game failure for ${creatorTelegramId}:`,
+        refundError
+      );
+    }
+    throw error;
+  }
 }
 
 export async function joinFantasyLeagueGame(
@@ -1954,17 +1971,34 @@ export async function joinFantasyLeagueGame(
     throw new Error("Arena not found.");
   }
 
-  // Transfer USDC from user wallet to treasury for arena entry
-  await transferUsdcForArenaEntry({
-    telegramId,
-    amount: game.entry_fee,
-  });
+  try {
+    // Transfer USDC from user wallet to treasury for arena entry
+    await transferUsdcForArenaEntry({
+      telegramId,
+      amount: game.entry_fee,
+    });
 
-  return joinFantasyGameWithEntry({
-    code: code.trim().toUpperCase(),
-    telegramId,
-    commissionRate: FANTASY_COMMISSION_RATE,
-  });
+    // After USDC transfer succeeds, join the game in the database
+    return await joinFantasyGameWithEntry({
+      code: code.trim().toUpperCase(),
+      telegramId,
+      commissionRate: FANTASY_COMMISSION_RATE,
+    });
+  } catch (error) {
+    // If database operation fails, refund the USDC transfer
+    try {
+      await transferUsdcFromTreasury({
+        telegramId,
+        amount: game.entry_fee,
+      });
+    } catch (refundError) {
+      console.error(
+        `[fantasy] Failed to refund USDC after join game failure for ${telegramId}:`,
+        refundError
+      );
+    }
+    throw error;
+  }
 }
 
 export async function getFantasyLeagueJoinPreview(
@@ -2362,14 +2396,18 @@ export async function placeFantasyTradeFromCallbackData(input: {
       shares,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-
-    if (message.toLowerCase().includes("insufficient virtual balance")) {
-      throw new Error(
-        `Insufficient virtual balance. Available: ${formatMoney(member.virtual_balance)}`
+    // If database operation fails, refund the USDC transfer
+    try {
+      await transferUsdcFromTreasury({
+        telegramId: input.telegramId,
+        amount: stake,
+      });
+    } catch (refundError) {
+      console.error(
+        `[fantasy] Failed to refund USDC after trade placement failure for ${input.telegramId}:`,
+        refundError
       );
     }
-
     throw error;
   }
 
@@ -2674,6 +2712,13 @@ export async function finalizeFantasyGames(): Promise<void> {
       }
 
       try {
+        // Transfer USDC from treasury to user wallet FIRST
+        await transferUsdcForPrizeWinning({
+          telegramId: award.telegramId,
+          amount,
+        });
+
+        // Only after successful USDC transfer, award the prize in the database
         const awarded = await awardFantasyPrize({
           gameId: game.id,
           memberId: member.id,
@@ -2684,36 +2729,23 @@ export async function finalizeFantasyGames(): Promise<void> {
         });
 
         if (!awarded) {
-          continue;
-        }
-
-        // Transfer USDC from treasury to user wallet for prize winnings
-        try {
-          await transferUsdcForPrizeWinning({
-            telegramId: award.telegramId,
-            amount,
-          });
-        } catch (transferError) {
-          console.warn(
-            `[fantasy] Failed to transfer prize USDC for ${game.code}/${award.telegramId}:`,
-            transferError
-          );
-          // Don't fail the whole payout process if transfer fails
-          // The ledger is already credited, this is just on-chain settlement
+          // If database award failed, we need to refund the USDC transfer
+          try {
+            await transferUsdcForArenaEntry({
+              telegramId: award.telegramId,
+              amount,
+            });
+          } catch (refundError) {
+            console.error(
+              `[fantasy] Failed to refund prize USDC after database award failure for ${game.code}/${award.telegramId}:`,
+              refundError
+            );
+          }
         }
       } catch (error) {
         payoutFailed = true;
-        await revokeFantasyPrize({
-          gameId: game.id,
-          telegramId: award.telegramId,
-        }).catch((rollbackError) => {
-          console.error(
-            `[fantasy] Failed to roll back prize claim for ${game.code}/${award.telegramId}:`,
-            rollbackError
-          );
-        });
         console.error(
-          `[fantasy] Failed to award prize for ${game.code}/${award.telegramId}:`,
+          `[fantasy] Failed to transfer prize USDC for ${game.code}/${award.telegramId}:`,
           error
         );
       }

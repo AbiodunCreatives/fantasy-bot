@@ -18,25 +18,35 @@ async function runFantasySettlementTick(): Promise<void> {
 
   settlementInFlight = true;
 
+  // Watchdog: timeout after 60 seconds (settlement can be more complex)
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Fantasy settlement tick timed out after 60 seconds')), 60000);
+  });
+
   try {
-    try {
-      await activateDueFantasyGames();
-    } catch (error) {
-      console.error("[fantasy-settlement] Activation pass failed:", error);
-    }
+    await Promise.race([
+      (async () => {
+        try {
+          await activateDueFantasyGames();
+        } catch (error) {
+          console.error("[fantasy-settlement] Activation pass failed:", error);
+        }
 
-    try {
-      const settledRounds = await settleFantasyLeagueTrades();
-      await sendFantasyRoundReengagements(settledRounds);
-    } catch (error) {
-      console.error("[fantasy-settlement] Settlement pass failed:", error);
-    }
+        try {
+          const settledRounds = await settleFantasyLeagueTrades();
+          await sendFantasyRoundReengagements(settledRounds);
+        } catch (error) {
+          console.error("[fantasy-settlement] Settlement pass failed:", error);
+        }
 
-    try {
-      await finalizeFantasyGames();
-    } catch (error) {
-      console.error("[fantasy-settlement] Finalization pass failed:", error);
-    }
+        try {
+          await finalizeFantasyGames();
+        } catch (error) {
+          console.error("[fantasy-settlement] Finalization pass failed:", error);
+        }
+      })(),
+      timeoutPromise
+    ]);
   } finally {
     settlementInFlight = false;
   }

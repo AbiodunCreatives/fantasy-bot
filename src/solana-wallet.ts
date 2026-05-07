@@ -618,3 +618,17 @@ export async function transferUsdcForPrizeWinning(input: {
     })
   ).signature;
 }
+
+export async function transferUsdcFromTreasury(input: {
+  telegramId: number;
+  amount: number;
+}): Promise<string> {
+  const wallet = await ensureFantasyWallet(input.telegramId);
+  await ensureUserUsdcAta(wallet);
+  return (
+    await transferTreasuryUsdc({
+      destinationAddress: wallet.owner_address,
+      amount: input.amount,
+    })
+  ).signature;
+}

@@ -165,17 +165,50 @@ function getEmbeddedRoundPricing(event: BayseEventRaw): RoundPricing | null {
   return hasUsableRoundPricing(pricing) ? pricing : null;
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, {
-    headers: { Accept: "application/json" },
-  });
+async function fetchJson<T>(url: string, options?: { timeout?: number; retries?: number }): Promise<T> {
+  const timeout = options?.timeout ?? 10000; // 10 second default timeout
+  const retries = options?.retries ?? 3; // 3 retries default
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Bayse API ${response.status}: ${text || response.statusText}`);
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Bayse API ${response.status}: ${text || response.statusText}`);
+      }
+
+      return response.json() as Promise<T>;
+    } catch (error) {
+      const isLastAttempt = attempt === retries;
+      const isTimeout = error instanceof Error && error.name === 'AbortError';
+
+      if (isLastAttempt) {
+        throw error;
+      }
+
+      // Only retry on timeout or network errors, not on HTTP errors
+      if (isTimeout || (error instanceof Error && error.message.includes('fetch'))) {
+        console.warn(`Bayse API call failed (attempt ${attempt + 1}/${retries + 1}), retrying:`, error.message);
+        // Exponential backoff: wait 1s, 2s, 4s...
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+        continue;
+      }
+
+      // For HTTP errors, don't retry
+      throw error;
+    }
   }
 
-  return response.json() as Promise<T>;
+  throw new Error('Unreachable code');
 }
 
 function matchesAssetSlug(event: BayseEventRaw, asset: BayseAsset): boolean {
@@ -362,30 +395,44 @@ export async function getEventPricing(
     marketId && marketId.startsWith("bayse_") ? marketId.slice(6) : marketId;
 
   const url = `${BAYSE_BASE_URL}/pm/events/${eventId}?currency=USD`;
-  const response = await fetch(url, {
-    headers: { Accept: "application/json" },
-  });
 
-  if (response.status === 404) {
-    return null;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Bayse API ${response.status}: ${text || response.statusText}`);
+    }
+
+    const event = (await response.json()) as BayseEventRaw;
+    const market =
+      (cleanMarketId
+        ? event.markets?.find((candidate) => candidate.id === cleanMarketId)
+        : null) ?? event.markets?.[0];
+
+    if (!market) {
+      return null;
+    }
+
+    return normalizeRoundPricing(event, market);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.error(`Bayse API getEventPricing timed out for event ${eventId}`);
+    }
+    throw error;
   }
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Bayse API ${response.status}: ${text || response.statusText}`);
-  }
-
-  const event = (await response.json()) as BayseEventRaw;
-  const market =
-    (cleanMarketId
-      ? event.markets?.find((candidate) => candidate.id === cleanMarketId)
-      : null) ?? event.markets?.[0];
-
-  if (!market) {
-    return null;
-  }
-
-  return normalizeRoundPricing(event, market);
 }
 
 export async function getEvent(eventId: string): Promise<unknown> {
@@ -403,45 +450,59 @@ export async function getTradeQuote(input: {
   const url =
     `${BAYSE_BASE_URL}/pm/events/${input.eventId}` +
     `/markets/${input.marketId}/quote`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      side: "BUY",
-      outcomeId: input.outcomeId,
-      amount: input.amount,
-      currency: input.currency ?? "USD",
-    }),
-  });
 
-  if (response.status === 404) {
-    return null;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        side: "BUY",
+        outcomeId: input.outcomeId,
+        amount: input.amount,
+        currency: input.currency ?? "USD",
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Bayse API ${response.status}: ${text || response.statusText}`);
+    }
+
+    const quote = (await response.json()) as BayseQuoteResponse;
+
+    return {
+      price: parseNumber(quote.price),
+      currentMarketPrice: parseNumber(quote.currentMarketPrice),
+      quantity: parseNumber(quote.quantity),
+      amount: parseNumber(quote.amount),
+      costOfShares: parseNumber(quote.costOfShares),
+      fee: parseNumber(quote.fee),
+      priceImpactAbsolute: parseNumber(quote.priceImpactAbsolute),
+      profitPercentage:
+        quote.profitPercentage === undefined || quote.profitPercentage === null
+          ? null
+          : parseNumber(quote.profitPercentage),
+      currencyBaseMultiplier: parseNumber(quote.currencyBaseMultiplier) || 1,
+      completeFill: quote.completeFill ?? true,
+      tradeGoesOverMaxLiability: quote.tradeGoesOverMaxLiability ?? false,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.error(`Bayse API getTradeQuote timed out for event ${input.eventId}`);
+    }
+    throw error;
   }
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Bayse API ${response.status}: ${text || response.statusText}`);
-  }
-
-  const quote = (await response.json()) as BayseQuoteResponse;
-
-  return {
-    price: parseNumber(quote.price),
-    currentMarketPrice: parseNumber(quote.currentMarketPrice),
-    quantity: parseNumber(quote.quantity),
-    amount: parseNumber(quote.amount),
-    costOfShares: parseNumber(quote.costOfShares),
-    fee: parseNumber(quote.fee),
-    priceImpactAbsolute: parseNumber(quote.priceImpactAbsolute),
-    profitPercentage:
-      quote.profitPercentage === undefined || quote.profitPercentage === null
-        ? null
-        : parseNumber(quote.profitPercentage),
-    currencyBaseMultiplier: parseNumber(quote.currencyBaseMultiplier) || 1,
-    completeFill: quote.completeFill ?? true,
-    tradeGoesOverMaxLiability: quote.tradeGoesOverMaxLiability ?? false,
-  };
 }
