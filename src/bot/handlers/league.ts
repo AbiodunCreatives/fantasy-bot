@@ -235,11 +235,7 @@ function buildStartOnboardingText(input: {
   return [
     `Welcome, ${input.firstName}.`,
     "",
-<<<<<<< HEAD
     "HeadlineOdds Arena uses Solana USDC for entry, prizes, and withdrawals.",
-=======
-    "HeadlineOdds Arena uses USDC for entry, prizes, and withdrawals.",
->>>>>>> 70a1822baf4aeedfd117e7765a16b05de8146558
     `Available balance: ${formatUsdc(input.balance)}`,
     "Open Wallet to view your Deposit address or tap Fund NGN for a PajCash top-up.",
   ].join("\n");

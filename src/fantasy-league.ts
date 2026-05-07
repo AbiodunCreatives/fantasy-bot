@@ -798,7 +798,8 @@ function buildRoundPromptText(state: PromptState): string {
       getProjectedPrizeForRank(state.rank, state.memberCount, state.game.prize_pool)
     )}`,
     `⏱ Round: ${formatRoundCountdown(state.closingDate)}  •  Arena: ${arenaTimeLeft}`,
-  ].join("\n");\r\n}
+  ].join("\n");
+}
 
 function buildRoundPromptKeyboard(state: PromptState): InlineKeyboard {
   return state.stage === "stake" && state.selectedDirection !== null
