@@ -213,7 +213,7 @@ function buildHowItWorksText(): string {
 }
 
 function buildHowItWorksKeyboard(): InlineKeyboard {
-  return new InlineKeyboard().text("Got it - let me in", START_LOBBY);
+  return new InlineKeyboard().text("🏟 Got it - let me in", START_LOBBY);
 }
 
 function buildBtcChartKeyboard(): InlineKeyboard {
@@ -224,7 +224,7 @@ function buildBtcChartKeyboard(): InlineKeyboard {
     keyboard.url("Open chart", url).row();
   }
 
-  keyboard.text("Browse arenas", ARENA_BACK_TO_LOBBY);
+  keyboard.text("🏟 Browse arenas", ARENA_BACK_TO_LOBBY);
   return keyboard;
 }
 
@@ -235,24 +235,28 @@ function buildStartOnboardingText(input: {
   return [
     `Welcome, ${input.firstName}.`,
     "",
+<<<<<<< HEAD
     "HeadlineOdds Arena uses Solana USDC for entry, prizes, and withdrawals.",
+=======
+    "HeadlineOdds Arena uses USDC for entry, prizes, and withdrawals.",
+>>>>>>> 70a1822baf4aeedfd117e7765a16b05de8146558
     `Available balance: ${formatUsdc(input.balance)}`,
-    "Open Wallet to view your personal deposit address or tap Fund NGN for a PajCash top-up.",
+    "Open Wallet to view your Deposit address or tap Fund NGN for a PajCash top-up.",
   ].join("\n");
 }
 
 function buildStartOnboardingKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Create Arena", ARENA_CREATE)
-    .text("Wallet", START_WALLET)
+    .text("⚡ Create Arena", ARENA_CREATE)
+    .text("💳 Wallet", START_WALLET)
     .row()
-    .text("Browse Arenas", START_LOBBY)
-    .text("Fund NGN", WALLET_NAIRA_HELP);
+    .text("🏟 Browse Arenas", START_LOBBY)
+    .text("💵 Fund NGN", WALLET_NAIRA_HELP);
 }
 
 function buildCreateArenaPickerText(balance: number): string {
   return [
-    "New Arena",
+    "⚡ New Arena",
     "",
     "Pick an entry fee:",
     "",
@@ -276,7 +280,7 @@ function buildCreateArenaDurationText(input: {
   entryFee: number;
 }): string {
   return [
-    "New Arena",
+    "⚡ New Arena",
     "",
     `Entry fee: ${formatMoney(input.entryFee, {
       minimumFractionDigits: 0,
@@ -305,7 +309,7 @@ function buildCreateArenaDurationKeyboard(entryFee: number): InlineKeyboard {
 
   keyboard
     .row()
-    .text("Pick a different fee", ARENA_CREATE)
+    .text("⚡ Pick a different fee", ARENA_CREATE)
     .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
 
   return keyboard;
@@ -340,12 +344,12 @@ function buildActiveArenaListKeyboard(codes: string[]): InlineKeyboard {
 
   for (const code of codes) {
     keyboard
-      .text("Status", `arena:status:${code}`)
-      .text("Leaderboard", `arena:board:${code}`)
+      .text("📈 Status", `arena:status:${code}`)
+      .text("🎯 Leaderboard", `arena:board:${code}`)
       .row();
   }
 
-  keyboard.text("+ Create New Arena", ARENA_CREATE).text("Browse Lobby", START_LOBBY);
+  keyboard.text("⚡ Create New Arena", ARENA_CREATE).text("🏟 Browse Lobby", START_LOBBY);
   return keyboard;
 }
 
@@ -446,7 +450,7 @@ function buildArenaLobbyKeyboard(input: {
   for (const card of input.live) {
     keyboard
       .text(
-        `${joinedCodes.has(card.code) ? "Live" : "Watch"} ${card.code}`,
+        `${joinedCodes.has(card.code) ? "🔴 Live" : "👁 Watch"} ${card.code}`,
         joinedCodes.has(card.code)
           ? `${ARENA_LIVE_PREFIX}${card.code}`
           : `arena:watch:${card.code}`
@@ -457,13 +461,13 @@ function buildArenaLobbyKeyboard(input: {
   if (!input.liveOnly) {
     for (const card of [...input.filling, ...input.open]) {
       if (joinedCodes.has(card.code)) {
-        keyboard.text(`Open ${card.code}`, `arena:status:${card.code}`).row();
+        keyboard.text(`📈 Open ${card.code}`, `arena:status:${card.code}`).row();
         continue;
       }
 
       keyboard
         .text(
-          `Join ${card.code} - ${formatMoney(card.entryFee, {
+          `🎯 Join ${card.code} - ${formatMoney(card.entryFee, {
             minimumFractionDigits: 0,
             maximumFractionDigits: 0,
           })}`,
@@ -473,10 +477,10 @@ function buildArenaLobbyKeyboard(input: {
     }
   }
 
-  keyboard.text("+ Create New Arena", ARENA_CREATE);
+  keyboard.text("⚡ Create New Arena", ARENA_CREATE);
 
   if (input.liveOnly) {
-    keyboard.text("Browse all", START_LOBBY);
+    keyboard.text("🏟 Browse all", START_LOBBY);
   } else {
     keyboard.text("🔄 Refresh", LOBBY_REFRESH);
   }
@@ -596,18 +600,20 @@ function buildInsufficientBalanceWithOptionsText(balance: number): string {
 
 function buildInsufficientBalanceKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Open wallet", WALLET_OPEN)
-    .text("Watch live arena", LOBBY_LIVE);
+    .text("💳 Open wallet", WALLET_OPEN)
+    .text("🔴 Watch live arena", LOBBY_LIVE);
 }
 
 function buildCreateInsufficientKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Open wallet", WALLET_OPEN)
-    .text("Pick a lower fee", ARENA_CREATE);
+    .text("💳 Open wallet", WALLET_OPEN)
+    .text("⚡ Pick a lower fee", ARENA_CREATE);
 }
 
 function buildAddFundsText(): string {
   return [
+    "💵 Add Funds",
+    "",
     "Open /wallet to view your Solana USDC deposit address.",
     "You can also tap Fund NGN or use /wallet fund-ngn 10000 to top up from a Naira bank transfer via PajCash.",
     "Deposits credit your in-bot balance and withdrawals pay out to any Solana wallet.",
@@ -616,8 +622,8 @@ function buildAddFundsText(): string {
 
 function buildAddFundsKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Open wallet", WALLET_OPEN)
-    .text("Browse arenas", FUNDS_BACK_TO_LOBBY);
+    .text("💳 Open wallet", WALLET_OPEN)
+    .text("🏟 Browse arenas", FUNDS_BACK_TO_LOBBY);
 }
 
 function buildCustomFundsPromptText(): string {
@@ -626,6 +632,8 @@ function buildCustomFundsPromptText(): string {
 
 function buildFundsAddedText(amount: number, balance: number): string {
   return [
+    "✅ Deposit Credited",
+    "",
     `Wallet balance: ${formatUsdc(balance)}`,
     "",
     "Your deposit has been credited.",
@@ -639,7 +647,7 @@ function buildFundsAddedKeyboard(): InlineKeyboard {
 function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSummary>>): string {
   const ledgerLines =
     summary.recentLedger.length === 0
-      ? ["No wallet activity yet."]
+      ? []
       : summary.recentLedger.slice(0, 4).map((entry) => {
           const sign = entry.direction === "credit" ? "+" : "-";
           const label =
@@ -657,25 +665,27 @@ function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSumm
         });
   const withdrawalLines =
     summary.recentWithdrawals.length === 0
-      ? ["No withdrawals yet."]
+      ? ["None"]
       : summary.recentWithdrawals.slice(0, 3).map((entry) => {
           const destination = abbreviateAddress(entry.destination_address);
           return `${entry.status.toUpperCase()}  ${formatUsdc(entry.amount)}  ->  ${destination}`;
         });
   const onrampLines =
     summary.recentOnramps.length === 0
-      ? ["No naira top-ups yet."]
+      ? ["None"]
       : summary.recentOnramps.slice(0, 3).map((entry) => {
           const amount =
             entry.actual_usdc_amount > 0
               ? entry.actual_usdc_amount
               : entry.expected_usdc_amount;
 
-          return `${entry.status.toUpperCase()}  ${formatNaira(entry.fiat_amount)}  ->  ${formatUsdc(amount)}`;
+          return `${formatNaira(entry.fiat_amount)}  ->  ${formatUsdc(amount)}  ${entry.status.toUpperCase()}`;
         });
 
+  const recentActivityHeader = ledgerLines.length > 0 ? "Recent activity:" : "";
+
   return [
-    "Solana USDC Wallet",
+    "💰 Solana USDC Wallet",
     "",
     `Available balance: ${formatUsdc(summary.balance)}`,
     "Network: Solana",
@@ -683,34 +693,34 @@ function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSumm
     "Deposit address:",
     summary.wallet.owner_address,
     "",
-    "Send only native USDC on Solana to this address.",
-    "Arena entries debit this balance. Winnings return here.",
-    "For Naira top-ups, tap Fund NGN or use /wallet fund-ngn 10000.",
+    "For Naira top-ups via Paj, tap Fund NGN",
     "",
-    "Recent activity:",
+    recentActivityHeader,
     ...ledgerLines,
-    "",
+    recentActivityHeader ? "" : "",
     "Recent withdrawals:",
     ...withdrawalLines,
     "",
     "Recent Naira top-ups:",
     ...onrampLines,
-  ].join("\n");
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 }
 
 function buildWalletKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Refresh deposits", WALLET_REFRESH)
-    .text("Fund NGN", WALLET_NAIRA_HELP)
+    .text("🔄 Refresh deposits", WALLET_REFRESH)
+    .text("💵 Fund NGN", WALLET_NAIRA_HELP)
     .row()
-    .text("Withdraw help", WALLET_WITHDRAW_HELP)
+    .text("🎮 Withdraw help", WALLET_WITHDRAW_HELP)
     .row()
-    .text("Browse arenas", WALLET_BACK);
+    .text("🏟 Browse arenas", WALLET_BACK);
 }
 
 function buildWalletNairaHelpText(): string {
   return [
-    "Fund NGN",
+    "💵 Fund NGN",
     "",
     "Choose a PajCash top-up amount below.",
     `Minimum: ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)}`,
@@ -751,7 +761,7 @@ function buildWalletNairaPickerKeyboard(): InlineKeyboard {
 
 function buildWalletNairaCustomAmountText(): string {
   return [
-    "Custom Fund NGN",
+    "💵 Custom Fund NGN",
     "",
     `Type any amount between ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)} and ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}.`,
     "Examples:",
@@ -832,15 +842,15 @@ function getWalletNairaAmountError(amount: number): string | null {
 
 function buildWalletNairaOrderKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Fund NGN Again", WALLET_NAIRA_HELP)
-    .text("Open wallet", WALLET_OPEN)
+    .text("💵 Fund NGN Again", WALLET_NAIRA_HELP)
+    .text("💳 Open wallet", WALLET_OPEN)
     .row()
-    .text("Browse arenas", WALLET_BACK);
+    .text("🏟 Browse arenas", WALLET_BACK);
 }
 
 function buildWalletCommandHelpText(): string {
   return [
-    "Wallet commands",
+    "💳 Wallet commands",
     "",
     "/wallet",
     "/wallet refresh",
@@ -851,7 +861,7 @@ function buildWalletCommandHelpText(): string {
 
 function buildWalletWithdrawHelpText(): string {
   return [
-    "Withdraw USDC",
+    "🎮 Withdraw USDC",
     "",
     `Use: /wallet withdraw <amount> <solana_address>`,
     `Minimum: ${formatUsdc(config.SOLANA_WITHDRAW_MIN_AMOUNT)}`,
@@ -870,7 +880,7 @@ function buildWalletNairaOrderText(input: {
   accountNumber: string;
 }): string {
   return [
-    "Naira top-up ready.",
+    "💰 Naira top-up ready.",
     "",
     `Order ID: ${input.orderId}`,
     `Send: ${formatNaira(input.fiatAmount)}`,
@@ -909,7 +919,7 @@ function buildWalletWithdrawalRequestedText(input: {
   destinationAddress: string;
 }): string {
   return [
-    "Withdrawal requested.",
+    "✅ Withdrawal requested.",
     "",
     `Amount: ${formatUsdc(input.amount)}`,
     `Destination: ${input.destinationAddress}`,
@@ -939,7 +949,7 @@ function buildCatchUpText(input: {
 function buildArenaStatusKeyboard(code: string): InlineKeyboard {
   return new InlineKeyboard()
     .text("⚡ Live market", `${ARENA_LIVE_PREFIX}${code}`)
-    .text("Full leaderboard", `arena:board:${code}`)
+    .text("🎯 Full leaderboard", `arena:board:${code}`)
     .row()
     .text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
 }
@@ -955,7 +965,7 @@ function buildArenaLiveKeyboard(input: {
     keyboard.url("Open Bayse", input.marketUrl);
   }
 
-  keyboard.text("Leaderboard", `arena:board:${input.code}`);
+  keyboard.text("📊 Leaderboard", `arena:board:${input.code}`);
 
   if (input.canCatchUp) {
     keyboard.row().text("⬆ How to catch #1", `${ARENA_CATCH_UP_PREFIX}${input.code}`);
@@ -1012,7 +1022,7 @@ function buildFantasyCreateSuccessKeyboard(shareUrl?: string): InlineKeyboard {
 
 function buildLeagueHelpText(): string {
   return [
-    "BAYSE FANTASY ARENA",
+    "🏟 HEADLINE ODDS ARENA",
     "",
     "Commands:",
     "/start - Open the welcome screen and lobby",
@@ -1046,7 +1056,7 @@ function buildLeagueHelpText(): string {
 
 function buildChartCommandText(): string {
   return [
-    "BTC 15m Chart",
+    "📊 BTC 15m Chart",
     "",
     "Use the bot menu button to open the live BTC chart.",
     "If the menu button is not visible yet, use the button below.",
@@ -1060,7 +1070,7 @@ function buildChartCommandKeyboard(): InlineKeyboard | undefined {
     return undefined;
   }
 
-  return new InlineKeyboard().url("Open BTC 15m Chart", url);
+  return new InlineKeyboard().url("📊 Open BTC 15m Chart", url);
 }
 
 async function replyChartCommand(ctx: Context): Promise<void> {
@@ -1248,7 +1258,7 @@ function formatTradeDirectionLabel(direction: "UP" | "DOWN"): string {
 
 function buildTradeLockedText(result: FantasyTradePlacementResult): string {
   return [
-    `Round ${result.roundNumber} locked in - ${result.game.code}`,
+    `✅ Round ${result.roundNumber} locked in - ${result.game.code}`,
     "",
     `Direction: ${formatTradeDirectionLabel(result.direction)}`,
     `Stake: ${formatMoney(result.stake)}`,
