@@ -305,7 +305,7 @@ async function main(): Promise<void> {
   await bot.api.setMyCommands([
     {
       command: "start",
-      description: "Open Bayse Arena and browse arenas",
+      description: "Open HeadlineOdds Arena and browse arenas",
     },
     {
       command: "help",

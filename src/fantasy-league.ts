@@ -131,6 +131,22 @@ function isUsableBtcPrice(value: number | null | undefined): value is number {
   return Number.isFinite(value) && (value ?? 0) >= MIN_VALID_BTC_PRICE_USD;
 }
 
+async function fetchBinanceBtcTicker(): Promise<number | null> {
+  const response = await fetch(BINANCE_BTC_PRICE_URL, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(BINANCE_BTC_PRICE_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Binance API ${response.status}: ${text || response.statusText}`);
+  }
+
+  const payload = (await response.json()) as { price?: unknown };
+  const parsedPrice = parseOptionalNumber(payload.price);
+  return isUsableBtcPrice(parsedPrice) ? parsedPrice : null;
+}
+
 async function getCachedBinanceBtcPrice(): Promise<number | null> {
   const now = Date.now();
 
@@ -155,52 +171,76 @@ async function getCachedBinanceBtcPrice(): Promise<number | null> {
     return null;
   }
 
+  // Try up to 2 attempts before backing off
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const parsedPrice = await fetchBinanceBtcTicker();
+
+      if (!isUsableBtcPrice(parsedPrice)) {
+        throw new Error(`Binance returned an invalid BTC price`);
+      }
+
+      cachedBinanceBtcPrice = {
+        value: parsedPrice,
+        fetchedAt: now,
+      };
+      cachedBinanceBtcPriceFailure = null;
+
+      return parsedPrice;
+    } catch (error) {
+      if (attempt === 0) {
+        // Brief pause before retry
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+
+      cachedBinanceBtcPriceFailure = {
+        failedAt: now,
+        message: error instanceof Error ? error.message : String(error),
+      };
+
+      console.warn(
+        `[fantasy] Failed to load BTC price from Binance after 2 attempts; backing off for ${Math.round(
+          BINANCE_BTC_PRICE_FAILURE_TTL_MS / 1000
+        )}s: ${cachedBinanceBtcPriceFailure.message}`
+      );
+    }
+  }
+
+  if (
+    cachedBinanceBtcPrice &&
+    now - cachedBinanceBtcPrice.fetchedAt < BINANCE_BTC_PRICE_STALE_MAX_AGE_MS
+  ) {
+    return cachedBinanceBtcPrice.value;
+  }
+
+  return null;
+}
+
+async function getBinanceBtcKlinesPrice(): Promise<number | null> {
   try {
-    const response = await fetch(BINANCE_BTC_PRICE_URL, {
+    const url = new URL("https://api.binance.com/api/v3/klines");
+    url.searchParams.set("symbol", "BTCUSDT");
+    url.searchParams.set("interval", "1m");
+    url.searchParams.set("limit", "1");
+
+    const response = await fetch(url.toString(), {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(BINANCE_BTC_PRICE_TIMEOUT_MS),
     });
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Binance API ${response.status}: ${text || response.statusText}`);
+      return null;
     }
 
-    const payload = (await response.json()) as {
-      price?: unknown;
-    };
-    const parsedPrice = parseOptionalNumber(payload.price);
-
-    if (!isUsableBtcPrice(parsedPrice)) {
-      throw new Error(`Binance returned an invalid BTC price: ${String(payload.price)}`);
+    const payload = (await response.json()) as unknown;
+    if (!Array.isArray(payload) || !Array.isArray(payload[0]) || payload[0].length < 5) {
+      return null;
     }
 
-    cachedBinanceBtcPrice = {
-      value: parsedPrice,
-      fetchedAt: now,
-    };
-    cachedBinanceBtcPriceFailure = null;
-
-    return parsedPrice;
-  } catch (error) {
-    cachedBinanceBtcPriceFailure = {
-      failedAt: now,
-      message: error instanceof Error ? error.message : String(error),
-    };
-
-    console.warn(
-      `[fantasy] Failed to load BTC price from Binance; using fallback sources for ${Math.round(
-        BINANCE_BTC_PRICE_FAILURE_TTL_MS / 1000
-      )}s: ${cachedBinanceBtcPriceFailure.message}`
-    );
-
-    if (
-      cachedBinanceBtcPrice &&
-      now - cachedBinanceBtcPrice.fetchedAt < BINANCE_BTC_PRICE_STALE_MAX_AGE_MS
-    ) {
-      return cachedBinanceBtcPrice.value;
-    }
-
+    const closePrice = parseOptionalNumber(payload[0][4]);
+    return isUsableBtcPrice(closePrice) ? closePrice : null;
+  } catch {
     return null;
   }
 }
@@ -757,28 +797,7 @@ function buildRoundPromptText(state: PromptState): string {
       getProjectedPrizeForRank(state.rank, state.memberCount, state.game.prize_pool)
     )}`,
     `⏱ Round: ${formatRoundCountdown(state.closingDate)}  •  Arena: ${arenaTimeLeft}`,
-  ].join("\n");
-
-  return [
-    `⚡ ROUND ${state.roundNumber}  •  Arena ${state.game.code}`,
-    "",
-    `BTC/USD: ${formatBtcPrice(state.referencePrice)}`,
-    `↑ UP  ${formatProbabilityPrice(state.upPrice)}   •   ↓ DOWN  ${formatProbabilityPrice(
-      state.downPrice
-    )}`,
-    "",
-    `Your stack: ${formatWholeMoney(state.virtualBalance)}  (${formatSignedPercent(
-      getVirtualReturnPct(state.game, state.virtualBalance)
-    )})`,
-    `Your rank: #${state.rank} of ${state.memberCount}`,
-    "",
-    state.stage === "direction" && state.selectedStake
-      ? `Stake ${formatWholeMoney(state.selectedStake ?? 0)} - which direction?`
-      : "Pick a stake:",
-    "",
-    `⏱ ${formatRoundCountdown(state.closingDate)} remaining`,
-  ].join("\n");
-}
+  ].join("\n");\r\n}
 
 function buildRoundPromptKeyboard(state: PromptState): InlineKeyboard {
   return state.stage === "stake" && state.selectedDirection !== null
@@ -804,15 +823,17 @@ function buildClosedPromptText(state: PromptState): string {
   ].join("\n");
 }
 
-function formatLiveRoundPromptBtcPrice(value: number | null): string {
+function formatLiveRoundPromptBtcPrice(value: number | null, approximate?: boolean): string {
   if (!isUsableBtcPrice(value)) {
-    return "price unavailable";
+    return "loading...";
   }
 
-  return `$${value.toLocaleString("en-US", {
+  const formatted = `$${value.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+
+  return approximate ? `~${formatted}` : formatted;
 }
 
 function formatLiveRoundPromptSignedMoney(value: number): string {
@@ -851,7 +872,7 @@ function formatFantasyTradeDirection(direction: FantasyTradeDirection): string {
 
 function buildLiveRoundQuestion(referencePrice: number | null): string {
   if (!Number.isFinite(referencePrice)) {
-    return "Will Bitcoin finish above the Bayse target when this round closes?";
+    return "Will Bitcoin finish above the target price when this round closes?";
   }
 
   return `Will Bitcoin be above ${formatLiveRoundPromptBtcPrice(
@@ -1053,36 +1074,52 @@ async function buildTradeReference(input: {
 }
 
 async function getRoundCurrentPrice(pricing: RoundPricing): Promise<number | null> {
+  // Layer 1: Binance ticker (cached, with retry)
   const binancePrice = await getCachedBinanceBtcPrice();
 
   if (isUsableBtcPrice(binancePrice)) {
     return binancePrice;
   }
 
+  // Layer 2: Bayse quote API
   const outcomeId = pricing.upOutcomeId ?? pricing.downOutcomeId;
 
-  if (!outcomeId) {
-    return null;
+  if (outcomeId) {
+    try {
+      const quote = await getTradeQuote({
+        eventId: pricing.eventId,
+        marketId: pricing.marketId,
+        outcomeId,
+        amount: FANTASY_TRADE_AMOUNTS[0],
+        currency: "USD",
+      });
+
+      const baysePrice = parseOptionalNumber(quote?.currentMarketPrice);
+
+      if (isUsableBtcPrice(baysePrice)) {
+        return baysePrice;
+      }
+    } catch (error) {
+      console.warn(
+        `[fantasy] Failed to load fallback BTC price from Bayse for ${pricing.eventId}:`,
+        error
+      );
+    }
   }
 
-  try {
-    const quote = await getTradeQuote({
-      eventId: pricing.eventId,
-      marketId: pricing.marketId,
-      outcomeId,
-      amount: FANTASY_TRADE_AMOUNTS[0],
-      currency: "USD",
-    });
+  // Layer 3: Binance klines (last resort live data)
+  const klinesPrice = await getBinanceBtcKlinesPrice();
 
-    const baysePrice = parseOptionalNumber(quote?.currentMarketPrice);
-    return isUsableBtcPrice(baysePrice) ? baysePrice : null;
-  } catch (error) {
-    console.warn(
-      `[fantasy] Failed to load fallback BTC price from Bayse for ${pricing.eventId}:`,
-      error
-    );
-    return null;
+  if (isUsableBtcPrice(klinesPrice)) {
+    return klinesPrice;
   }
+
+  // Layer 4: Use the event target price as approximate context
+  if (isUsableBtcPrice(pricing.eventThreshold)) {
+    return pricing.eventThreshold;
+  }
+
+  return null;
 }
 
 function inferResolvedDirection(payload: unknown): FantasyTradeDirection | null {

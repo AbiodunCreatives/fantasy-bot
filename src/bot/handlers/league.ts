@@ -189,7 +189,7 @@ function buildArenaInsufficientBalanceText(
 
 function buildStartWelcomeText(): string {
   return [
-    "Bayse Arena",
+    "HeadlineOdds Arena",
     "",
     "BTC fantasy trading with Solana USDC funding.",
     "Each user gets a separate in-bot Solana wallet for deposits and withdrawals.",
@@ -235,7 +235,7 @@ function buildStartOnboardingText(input: {
   return [
     `Welcome, ${input.firstName}.`,
     "",
-    "Bayse Arena uses Solana USDC for entry, prizes, and withdrawals.",
+    "HeadlineOdds Arena uses Solana USDC for entry, prizes, and withdrawals.",
     `Available balance: ${formatUsdc(input.balance)}`,
     "Open Wallet to view your personal deposit address or tap Fund NGN for a PajCash top-up.",
   ].join("\n");

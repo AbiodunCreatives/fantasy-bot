@@ -264,7 +264,7 @@ export function buildShareInviteUrl(input: {
     `I just created a ${formatMoney(input.entryFee, {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
-    })} arena on Bayse Arena.\n\n` +
+    })} arena on HeadlineOdds Arena.\n\n` +
     `Join with code ${input.code} - best bankroll takes the pot.\n` +
     `👉 t.me/${username}?start=${input.code}`;
 
@@ -288,7 +288,7 @@ export function buildShareResultUrl(input: {
     `Just finished a ${formatMoney(input.entryFee, {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
-    })} arena on Bayse Arena.\n\n` +
+    })} arena on HeadlineOdds Arena.\n\n` +
     `Finished #${input.finishPlace} of ${input.fieldSize}. ` +
     `${formatSignedPercent(input.returnPct)} virtual return.\n` +
     `1st place did ${formatSignedPercent(input.leaderReturnPct)}.\n\n` +
