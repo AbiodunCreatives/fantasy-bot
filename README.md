@@ -1,8 +1,4 @@
-# fantasy-bot
-
-Standalone fantasy-only bot scaffold extracted from the main `edgetrader-bot` codebase.
-
-## Included
+HeadlineOdds Arena
 
 - `/league` command flow
 - `/wallet` Solana USDC funding flow
@@ -12,13 +8,6 @@ Standalone fantasy-only bot scaffold extracted from the main `edgetrader-bot` co
 - fantasy activation, settlement, and finalization job
 - custodial Solana USDC wallet ledger and commission tracking
 
-## Intentionally left out
-
-- signal monitors and trade handlers
-- Bayse connect / user trading account flow
-- search, picks, alerts, and signal UX
-
-## Current funding model
 
 This repo now uses real `USDC` on `Solana` for funding and withdrawals.
 
