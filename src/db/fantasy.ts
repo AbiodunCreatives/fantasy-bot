@@ -1047,6 +1047,24 @@ export async function applyFantasyTradeSettlement(
   throw new Error("Fantasy member settlement failed after multiple retries.");
 }
 
+export async function settleFantasyTradeAtomically(input: {
+  tradeId: string;
+  outcome: Exclude<FantasyTradeOutcome, "PENDING">;
+  payout: number;
+}): Promise<boolean> {
+  const { data, error } = await supabase.rpc("settle_fantasy_trade_atomically", {
+    p_trade_id: input.tradeId,
+    p_outcome: input.outcome,
+    p_payout: roundMoney(input.payout),
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return Boolean(data);
+}
+
 export async function listPendingFantasyTradesForGame(
   gameId: string
 ): Promise<FantasyTrade[]> {
@@ -1100,18 +1118,19 @@ export async function revokeFantasyPrize(input: {
   gameId: string;
   telegramId: number;
 }): Promise<boolean> {
-  const { data, error } = await supabase
-    .from("fantasy_payouts")
-    .delete()
-    .eq("game_id", input.gameId)
-    .eq("telegram_id", input.telegramId)
-    .select("id");
+  const { data, error } = await supabase.rpc(
+    "revoke_fantasy_prize_with_debit",
+    {
+      p_game_id: input.gameId,
+      p_telegram_id: input.telegramId,
+    }
+  );
 
   if (error) {
     throw error;
   }
 
-  return (data?.length ?? 0) > 0;
+  return Boolean(data);
 }
 
 export async function syncFantasyPrizeAwards(gameId: string): Promise<void> {

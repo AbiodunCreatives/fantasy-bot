@@ -919,3 +919,135 @@ BEGIN
   RETURN TRUE;
 END;
 $$;
+
+CREATE OR REPLACE FUNCTION settle_fantasy_trade_atomically(
+  p_trade_id UUID,
+  p_outcome TEXT,
+  p_payout NUMERIC
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  normalized_payout NUMERIC(10,2) := ROUND(COALESCE(p_payout, 0)::NUMERIC, 2);
+  trade_row RECORD;
+  member_row RECORD;
+BEGIN
+  -- Validate outcome
+  IF p_outcome NOT IN ('WIN', 'LOSS') THEN
+    RAISE EXCEPTION 'Invalid outcome: %', p_outcome;
+  END IF;
+
+  -- Get trade row with lock
+  SELECT * INTO trade_row
+  FROM fantasy_trades
+  WHERE id = p_trade_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Trade not found: %', p_trade_id;
+  END IF;
+
+  -- Check if already settled
+  IF trade_row.outcome != 'PENDING' THEN
+    RETURN FALSE; -- Already settled
+  END IF;
+
+  -- Get member row with lock
+  SELECT * INTO member_row
+  FROM fantasy_game_members
+  WHERE id = trade_row.member_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Member not found: %', trade_row.member_id;
+  END IF;
+
+  -- Update trade
+  UPDATE fantasy_trades
+  SET
+    outcome = p_outcome,
+    payout = normalized_payout,
+    resolved_at = NOW()
+  WHERE id = p_trade_id;
+
+  -- Update member stats and balance
+  UPDATE fantasy_game_members
+  SET
+    wins = wins + CASE WHEN p_outcome = 'WIN' THEN 1 ELSE 0 END,
+    losses = losses + CASE WHEN p_outcome = 'LOSS' THEN 1 ELSE 0 END,
+    virtual_balance = ROUND((virtual_balance + normalized_payout)::NUMERIC, 2)
+  WHERE id = trade_row.member_id;
+
+  RETURN TRUE;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION revoke_fantasy_prize_with_debit(
+  p_game_id UUID,
+  p_telegram_id BIGINT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  payout_row RECORD;
+BEGIN
+  -- Get the payout record
+  SELECT * INTO payout_row
+  FROM fantasy_payouts
+  WHERE game_id = p_game_id AND telegram_id = p_telegram_id;
+
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  -- Delete the payout record
+  DELETE FROM fantasy_payouts
+  WHERE game_id = p_game_id AND telegram_id = p_telegram_id;
+
+  -- Debit the wallet balance
+  UPDATE fantasy_users
+  SET
+    wallet_balance = ROUND((wallet_balance - payout_row.amount)::NUMERIC, 6),
+    updated_at = NOW()
+  WHERE telegram_id = p_telegram_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Wallet user not found.';
+  END IF;
+
+  -- Insert ledger entry for the debit
+  INSERT INTO fantasy_wallet_ledger (
+    telegram_id,
+    entry_type,
+    direction,
+    amount,
+    asset,
+    status,
+    reference_type,
+    reference_id,
+    idempotency_key,
+    metadata
+  )
+  VALUES (
+    p_telegram_id,
+    'fantasy_prize_revoke',
+    'debit',
+    ROUND(payout_row.amount::NUMERIC, 6),
+    'USDC',
+    'confirmed',
+    'fantasy_game',
+    p_game_id::TEXT,
+    'fantasy_prize_revoke:' || p_game_id::TEXT || ':' || p_telegram_id::TEXT,
+    jsonb_build_object(
+      'game_id',
+      p_game_id,
+      'place',
+      payout_row.place
+    )
+  );
+
+  RETURN TRUE;
+END;
+$$;

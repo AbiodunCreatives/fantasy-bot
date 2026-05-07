@@ -38,6 +38,7 @@ import {
   reopenFantasyTradeSettlement,
   revokeFantasyPrize,
   settleFantasyTrade,
+  settleFantasyTradeAtomically,
   syncFantasyPrizeAwards,
   updateFantasyGame,
   updateFantasyMemberRoundTracking,
@@ -2497,31 +2498,18 @@ export async function settleFantasyLeagueTrades(): Promise<FantasyRoundSettlemen
         const payout = outcome === "WIN" ? roundMoney(pendingTrade.shares) : 0;
 
         try {
-          const settledTrade = await settleFantasyTrade({
+          const settled = await settleFantasyTradeAtomically({
             tradeId: pendingTrade.id,
             outcome,
             payout,
           });
 
-          if (!settledTrade) {
+          if (!settled) {
+            // Trade was already settled, skip
             continue;
           }
-
-          await applyFantasyTradeSettlement(pendingTrade.member_id, {
-            outcome,
-            payout,
-          });
         } catch (error) {
           settlementFailed = true;
-          await reopenFantasyTradeSettlement({
-            tradeId: pendingTrade.id,
-            expectedOutcome: outcome,
-          }).catch((rollbackError) => {
-            console.error(
-              `[fantasy] Failed to roll back fantasy trade ${pendingTrade.id}:`,
-              rollbackError
-            );
-          });
           console.error(
             `[fantasy] Failed to settle fantasy trade ${pendingTrade.id}:`,
             error
@@ -2712,13 +2700,7 @@ export async function finalizeFantasyGames(): Promise<void> {
       }
 
       try {
-        // Transfer USDC from treasury to user wallet FIRST
-        await transferUsdcForPrizeWinning({
-          telegramId: award.telegramId,
-          amount,
-        });
-
-        // Only after successful USDC transfer, award the prize in the database
+        // Award the prize in the database FIRST (credits internal balance)
         const awarded = await awardFantasyPrize({
           gameId: game.id,
           memberId: member.id,
@@ -2729,25 +2711,33 @@ export async function finalizeFantasyGames(): Promise<void> {
         });
 
         if (!awarded) {
-          // If database award failed, we need to refund the USDC transfer
-          try {
-            await transferUsdcForArenaEntry({
-              telegramId: award.telegramId,
-              amount,
-            });
-          } catch (refundError) {
-            console.error(
-              `[fantasy] Failed to refund prize USDC after database award failure for ${game.code}/${award.telegramId}:`,
-              refundError
-            );
-          }
+          continue; // Prize already awarded
         }
+
+        // Only after successful database award, transfer the USDC
+        await transferUsdcForPrizeWinning({
+          telegramId: award.telegramId,
+          amount,
+        });
       } catch (error) {
         payoutFailed = true;
         console.error(
-          `[fantasy] Failed to transfer prize USDC for ${game.code}/${award.telegramId}:`,
+          `[fantasy] Failed to award prize for ${game.code}/${award.telegramId}:`,
           error
         );
+
+        // If USDC transfer failed but database award succeeded, revoke the prize
+        try {
+          await revokeFantasyPrize({
+            gameId: game.id,
+            telegramId: award.telegramId,
+          });
+        } catch (revokeError) {
+          console.error(
+            `[fantasy] Failed to revoke prize after payout failure for ${game.code}/${award.telegramId}:`,
+            revokeError
+          );
+        }
       }
     }
 

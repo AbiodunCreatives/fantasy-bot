@@ -173,6 +173,25 @@ if (config.REDIS_MODE === "redis") {
   }
 }
 
+// Fail-closed webhook security: require secrets when webhook URL is configured
+if (config.WEBHOOK_URL) {
+  if (!config.WEBHOOK_SECRET) {
+    console.error("ERROR: WEBHOOK_SECRET is required when WEBHOOK_URL is set.");
+    process.exit(1);
+  }
+
+  if (config.WEBHOOK_PATH_SECRET === "dev-fantasy-webhook-secret") {
+    console.error("ERROR: Set WEBHOOK_PATH_SECRET to a unique value when WEBHOOK_URL is set.");
+    process.exit(1);
+  }
+}
+
+// Require health check token when health endpoint is exposed
+if (!config.HEALTH_CHECK_TOKEN) {
+  console.error("ERROR: HEALTH_CHECK_TOKEN is required to protect the /health endpoint.");
+  process.exit(1);
+}
+
 if (config.NODE_ENV === "production") {
   if (!config.DASHBOARD_ONLY_MODE && config.REDIS_MODE !== "redis") {
     console.error("ERROR: REDIS_MODE must be redis in production. Memory mode is only for local testing.");

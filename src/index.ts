@@ -61,6 +61,10 @@ const telegramWebhookRateLimit = createRateLimitMiddleware({
   message: "Too many Telegram webhook requests. Please wait a minute.",
 });
 
+// Replay protection for webhook updates
+const processedUpdateIds = new Set<number>();
+const MAX_UPDATE_IDS = 10000; // Keep last 10k update IDs
+
 app.set("trust proxy", true);
 app.use(express.json({ limit: "100kb" }));
 app.use(express.urlencoded({ extended: false, limit: "10kb" }));
@@ -225,6 +229,26 @@ app.post("/webhook/:secret", telegramWebhookRateLimit, (req, res) => {
     return;
   }
 
+  // Replay protection: check if we've already processed this update
+  const updateId = req.body?.update_id;
+  if (typeof updateId === "number") {
+    if (processedUpdateIds.has(updateId)) {
+      console.warn(`[webhook] Ignoring duplicate update_id: ${updateId}`);
+      res.sendStatus(200);
+      return;
+    }
+
+    processedUpdateIds.add(updateId);
+
+    // Prevent memory leak by limiting stored update IDs
+    if (processedUpdateIds.size > MAX_UPDATE_IDS) {
+      const oldestId = processedUpdateIds.values().next().value;
+      if (oldestId !== undefined) {
+        processedUpdateIds.delete(oldestId);
+      }
+    }
+  }
+
   res.sendStatus(200);
 
   bot.handleUpdate(req.body).catch((error) => {
@@ -386,7 +410,9 @@ async function main(): Promise<void> {
       drop_pending_updates: true,
     });
 
-    console.log(`[bot] Webhook registered -> ${webhookUrl}`);
+    // Log webhook URL without exposing secrets
+    const sanitizedUrl = `${config.WEBHOOK_URL}/webhook/[REDACTED]`;
+    console.log(`[bot] Webhook registered -> ${sanitizedUrl}`);
 
     server.listen(config.PORT, () => {
       console.log(
