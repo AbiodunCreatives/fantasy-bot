@@ -1,6 +1,6 @@
 import { supabase } from "../src/db/client.ts";
 
-const DEMO_CREATOR_TELEGRAM_ID = 7_100_000_001;
+const DEMO_CREATOR_TELEGRAM_ID = 7_068_951_342;
 const DEMO_ENTRY_FEE = 10;
 const DEMO_DURATION_HOURS = 24;
 const DEMO_PRIZE_POOL = 138;
@@ -18,21 +18,21 @@ const DEMO_OUTCOME_CANDIDATES = [
   ["WIN", "LOSS"],
 ] as const;
 const DEMO_USERNAMES = [
-  "Roland_ayd",
+  "Xage",
   "CallMi_Alex",
   "distinct_10",
   "Abiodun",
   "faith_jul",
   "crypto_kay99",
   "traderboi_ng",
-  "StacksOnStacks",
-  "el_predictor",
+  "boyboye",
+  "Roland_ayd",
   "web3_wale",
-  "naira2usdc",
+  "Darboiz_",
   "bullrun_eze",
-  "MarketGhost",
+  "Adiking",
   "0xTunde",
-  "signal_chaser",
+  "leomaxi",
 ] as const;
 const DEMO_BALANCES = [
   1847,
