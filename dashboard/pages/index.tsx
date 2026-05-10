@@ -100,7 +100,7 @@ export default function DashboardPage() {
       <div className="shell">
         <header>
           <div>
-            <h1>Bayse Fantasy — Admin</h1>
+            <h1>HeadlineOdds Arena — Admin Panel</h1>
             {lastRefresh && (
               <p className="meta">
                 Updated {dt(lastRefresh.toISOString())} · auto-refreshes every 30s
