@@ -1,0 +1,3 @@
+{
+  "/api/logout": "pages/api/logout.js"
+}

@@ -2,6 +2,7 @@ import { config } from "./config.ts";
 import {
   activateDueFantasyGames,
   finalizeFantasyGames,
+  processPendingRefunds,
   sendFantasyRoundReengagements,
   settleFantasyLeagueTrades,
 } from "./fantasy-league.ts";
@@ -43,6 +44,12 @@ async function runFantasySettlementTick(): Promise<void> {
           await finalizeFantasyGames();
         } catch (error) {
           console.error("[fantasy-settlement] Finalization pass failed:", error);
+        }
+
+        try {
+          await processPendingRefunds();
+        } catch (error) {
+          console.error("[fantasy-settlement] Pending refunds pass failed:", error);
         }
       })(),
       timeoutPromise
