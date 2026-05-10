@@ -3,14 +3,16 @@ import Redis from "ioredis";
 import { config } from "../config.ts";
 
 type RedisSetMode = "EX";
+type RedisSetCondition = "NX" | "XX";
 
 interface CacheClient {
   set(
     key: string,
     value: string,
     mode?: RedisSetMode,
-    durationSeconds?: number
-  ): Promise<"OK">;
+    durationSeconds?: number,
+    condition?: RedisSetCondition
+  ): Promise<"OK" | null>;
   get(key: string): Promise<string | null>;
   del(...keys: string[]): Promise<number>;
   incr(key: string): Promise<number>;
@@ -39,8 +41,9 @@ class MemoryCacheClient implements CacheClient {
     key: string,
     value: string,
     mode?: RedisSetMode,
-    durationSeconds?: number
-  ): Promise<"OK"> {
+    durationSeconds?: number,
+    condition?: RedisSetCondition
+  ): Promise<"OK" | null> {
     let expiresAt: number | null = null;
 
     if (mode !== undefined) {
@@ -49,6 +52,13 @@ class MemoryCacheClient implements CacheClient {
       }
 
       expiresAt = Date.now() + durationSeconds * 1000;
+    }
+
+    if (condition === "NX") {
+      this.purgeExpiredKey(key);
+      if (this.store.has(key)) {
+        return null;
+      }
     }
 
     this.store.set(key, { value, expiresAt });

@@ -847,6 +847,9 @@ export async function placeFantasyTradeWithDebit(input: {
   });
 
   if (error) {
+    if (isUniqueViolation(error)) {
+      throw new Error("You already placed a fantasy trade for this round.");
+    }
     throw error;
   }
 
@@ -1172,6 +1175,7 @@ export async function listFantasyPayouts(
     .from("fantasy_payouts")
     .select("telegram_id, place, amount")
     .eq("game_id", gameId)
+    .eq("prize_transfer_status", "confirmed")
     .order("place", { ascending: true });
 
   if (error) {
@@ -1237,6 +1241,196 @@ export async function getFantasyLeaderboard(
       accuracy_pct: accuracyPct,
       prize_awarded: member.prize_awarded,
       joined_at: member.joined_at,
+    };
+  });
+}
+
+export interface FantasyPendingRefund {
+  id: string;
+  telegram_id: number;
+  amount: number;
+  game_code: string;
+  status: "pending" | "completed" | "failed";
+  retry_count: number;
+  failure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface FantasyPendingRefundRow {
+  id: string;
+  telegram_id: number;
+  amount: number | string | null;
+  game_code: string;
+  status: string;
+  retry_count: number;
+  failure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function normalizeRefund(row: FantasyPendingRefundRow): FantasyPendingRefund {
+  return {
+    ...row,
+    amount: parseMoney(row.amount),
+    status: row.status as FantasyPendingRefund["status"],
+    failure_reason: row.failure_reason ?? null,
+  };
+}
+
+export async function persistPendingRefund(input: {
+  telegramId: number;
+  amount: number;
+  gameCode: string;
+}): Promise<FantasyPendingRefund> {
+  const { data, error } = await supabase
+    .from("fantasy_pending_refunds")
+    .insert({
+      telegram_id: input.telegramId,
+      amount: roundMoney(input.amount),
+      game_code: input.gameCode,
+      status: "pending",
+    })
+    .select("*")
+    .single();
+
+  if (error) throw error;
+  return normalizeRefund(data as FantasyPendingRefundRow);
+}
+
+export async function markRefundCompleted(refundId: string): Promise<void> {
+  const { error } = await supabase
+    .from("fantasy_pending_refunds")
+    .update({ status: "completed", updated_at: new Date().toISOString() })
+    .eq("id", refundId);
+  if (error) throw error;
+}
+
+export async function markRefundFailed(
+  refundId: string,
+  reason: string,
+  retryCount: number
+): Promise<void> {
+  const { error } = await supabase
+    .from("fantasy_pending_refunds")
+    .update({
+      status: "failed",
+      failure_reason: reason,
+      retry_count: retryCount,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", refundId);
+  if (error) throw error;
+}
+
+export async function incrementRefundRetry(
+  refundId: string,
+  retryCount: number
+): Promise<void> {
+  const { error } = await supabase
+    .from("fantasy_pending_refunds")
+    .update({ retry_count: retryCount, updated_at: new Date().toISOString() })
+    .eq("id", refundId);
+  if (error) throw error;
+}
+
+export async function listPendingRefunds(): Promise<FantasyPendingRefund[]> {
+  const { data, error } = await supabase
+    .from("fantasy_pending_refunds")
+    .select("*")
+    .eq("status", "pending")
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((row) => normalizeRefund(row as FantasyPendingRefundRow));
+}
+
+
+export async function recordPendingPrizeTransfer(input: {
+  gameId: string;
+  telegramId: number;
+  place: number;
+  amount: number;
+  referenceId?: string | null;
+}): Promise<boolean> {
+  const { data, error } = await supabase.rpc("record_pending_prize_transfer", {
+    p_game_id: input.gameId,
+    p_telegram_id: input.telegramId,
+    p_place: input.place,
+    p_amount: roundMoney(input.amount),
+    p_reference_id: input.referenceId ?? null,
+  });
+  if (error) {
+    if (isUniqueViolation(error)) return false;
+    throw error;
+  }
+  return Boolean(data);
+}
+
+export async function confirmPrizeTransfer(input: {
+  gameId: string;
+  memberId: string;
+  telegramId: number;
+  place: number;
+  amount: number;
+  referenceId?: string | null;
+}): Promise<boolean> {
+  const { data, error } = await supabase.rpc("confirm_prize_transfer", {
+    p_game_id: input.gameId,
+    p_member_id: input.memberId,
+    p_telegram_id: input.telegramId,
+    p_place: input.place,
+    p_amount: roundMoney(input.amount),
+    p_reference_id: input.referenceId ?? null,
+  });
+  if (error) throw error;
+  return Boolean(data);
+}
+
+export async function markPrizeTransferFailed(input: {
+  gameId: string;
+  telegramId: number;
+  retryCount: number;
+}): Promise<void> {
+  const { error } = await supabase
+    .from("fantasy_payouts")
+    .update({ prize_transfer_status: "failed", transfer_retry_count: input.retryCount })
+    .eq("game_id", input.gameId)
+    .eq("telegram_id", input.telegramId);
+  if (error) throw error;
+}
+
+export async function getPrizeTransferRetryCount(
+  gameId: string,
+  telegramId: number
+): Promise<number> {
+  const { data, error } = await supabase
+    .from("fantasy_payouts")
+    .select("transfer_retry_count")
+    .eq("game_id", gameId)
+    .eq("telegram_id", telegramId)
+    .maybeSingle();
+  if (error) throw error;
+  const row = data as { transfer_retry_count?: unknown } | null;
+  return typeof row?.transfer_retry_count === "number" ? row.transfer_retry_count : 0;
+}
+
+export async function listPendingPrizeTransfers(
+  gameId: string
+): Promise<Array<{ telegram_id: number; place: number; amount: number; transfer_retry_count: number }>> {
+  const { data, error } = await supabase
+    .from("fantasy_payouts")
+    .select("telegram_id, place, amount, transfer_retry_count")
+    .eq("game_id", gameId)
+    .eq("prize_transfer_status", "pending")
+    .order("place", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((row) => {
+    const r = row as { telegram_id: number; place: number; amount: number | string | null; transfer_retry_count: number };
+    return {
+      telegram_id: r.telegram_id,
+      place: r.place,
+      amount: parseMoney(r.amount),
+      transfer_retry_count: r.transfer_retry_count ?? 0,
     };
   });
 }
