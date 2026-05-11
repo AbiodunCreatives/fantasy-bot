@@ -2046,16 +2046,21 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
   }
 
   if (data.startsWith(ARENA_REMIND_PREFIX)) {
+    const code = data.slice(ARENA_REMIND_PREFIX.length);
+    const confirmMsg = await ctx.reply(
+      "Locked in. I'll nudge you when the next round opens."
+    ).catch(() => null);
     const saved = await saveFantasyNextRoundReminder(
       ctx.from.id,
-      data.slice(ARENA_REMIND_PREFIX.length)
+      code,
+      confirmMsg?.message_id
     );
-
-    await ctx.reply(
-      saved
-        ? "Locked in. I'll nudge you when the next round opens."
-        : "I couldn't set a reminder for that arena."
-    );
+    if (!saved) {
+      if (confirmMsg) {
+        await ctx.api.deleteMessage(ctx.chat!.id, confirmMsg.message_id).catch(() => undefined);
+      }
+      await ctx.reply("I couldn't set a reminder for that arena.");
+    }
     return;
   }
 }

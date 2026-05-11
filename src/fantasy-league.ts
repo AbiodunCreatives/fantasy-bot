@@ -448,6 +448,10 @@ function fantasyRoundReminderKey(gameId: string, telegramId: number): string {
   return `fantasy:remind:${gameId}:${telegramId}`;
 }
 
+function fantasyRoundReminderMsgKey(gameId: string, telegramId: number): string {
+  return `fantasy:remind:msg:${gameId}:${telegramId}`;
+}
+
 function fantasyMidRoundNudgeKey(
   gameId: string,
   eventId: string,
@@ -565,7 +569,8 @@ export async function addFantasyPlayBalance(
 
 export async function saveFantasyNextRoundReminder(
   telegramId: number,
-  code: string
+  code: string,
+  confirmationMessageId?: number
 ): Promise<boolean> {
   const game = await getFantasyGameByCode(code.trim().toUpperCase());
 
@@ -586,6 +591,15 @@ export async function saveFantasyNextRoundReminder(
     FANTASY_NEXT_ROUND_REMINDER_TTL_SECONDS
   );
 
+  if (confirmationMessageId) {
+    await redis.set(
+      fantasyRoundReminderMsgKey(game.id, telegramId),
+      String(confirmationMessageId),
+      "EX",
+      FANTASY_NEXT_ROUND_REMINDER_TTL_SECONDS
+    );
+  }
+
   return true;
 }
 
@@ -593,7 +607,19 @@ async function consumeFantasyNextRoundReminder(
   gameId: string,
   telegramId: number
 ): Promise<boolean> {
-  const deleted = await redis.del(fantasyRoundReminderKey(gameId, telegramId));
+  const msgIdStr = await redis.get(fantasyRoundReminderMsgKey(gameId, telegramId));
+  const [deleted] = await Promise.all([
+    redis.del(fantasyRoundReminderKey(gameId, telegramId)),
+    redis.del(fantasyRoundReminderMsgKey(gameId, telegramId)),
+  ]);
+
+  if (msgIdStr) {
+    const msgId = Number(msgIdStr);
+    if (msgId) {
+      tgApi.deleteMessage(telegramId, msgId).catch(() => undefined);
+    }
+  }
+
   return deleted > 0;
 }
 
@@ -2123,6 +2149,10 @@ export async function activateDueFantasyGames(): Promise<void> {
   const dueGames = await listDueOpenFantasyGames(new Date().toISOString());
 
   for (const game of dueGames) {
+    const lockKey = `arena:activating:${game.id}`;
+    const acquired = await redis.set(lockKey, "1", "EX", 60, "NX");
+    if (!acquired) continue;
+
     const members = await listFantasyGameMembers(game.id);
     await recalculateFantasyPrizePool(game.id, FANTASY_COMMISSION_RATE);
 
