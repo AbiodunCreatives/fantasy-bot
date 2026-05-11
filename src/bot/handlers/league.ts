@@ -1039,7 +1039,7 @@ function buildLeagueHelpText(): string {
     "- Entry fee buys virtual bankroll at 100x",
     "- One fantasy trade per round",
     "- Bot keeps 8% commission when the league closes",
-    "- Top finishers split the prize pool",
+    "- Top finishers split the prize pool (1v1 arenas: winner takes all)",
     "- Joining is final",
     "- Deposits and withdrawals use Solana USDC",
     "- Arena entries debit your in-bot USDC balance",

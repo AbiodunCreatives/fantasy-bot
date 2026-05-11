@@ -179,7 +179,7 @@ export function getPrizeSplits(playerCount: number): number[] {
   }
 
   if (playerCount === 2) {
-    return [0.6, 0.4];
+    return [1];
   }
 
   return [0.5, 0.3, 0.2];
