@@ -14,14 +14,12 @@ import {
   applyFantasyTradeSettlement,
   awardFantasyPrize,
   confirmPrizeTransfer,
-  createFantasyGameWithEntry,
-  getFantasyGameByCode,
+  createFantasyGameWithEntry,  getFantasyGameByCode,
   getFantasyGameById,
   getFantasyGameMember,
   getFantasyLeaderboard,
   getLatestFantasyTradeForMember,
   getFantasyTradeForMemberEvent,
-  getPrizeTransferRetryCount,
   incrementRefundRetry,  joinFantasyGameWithEntry,
   listActiveFantasyGames,
   listDueOpenFantasyGames,
@@ -33,15 +31,12 @@ import {
   listPendingFantasyTrades,
   listFantasyTradesForGameEvent,
   listPendingFantasyTradesForGame,
-  listPendingPrizeTransfers,
   listPendingRefunds,
   listUserFantasyGames,
-  markPrizeTransferFailed,
   markRefundCompleted,
   markRefundFailed,
   placeFantasyTradeWithDebit,
   recalculateFantasyPrizePool,
-  recordPendingPrizeTransfer,
   reopenFantasyTradeSettlement,
   revokeFantasyPrize,
   settleFantasyTrade,
@@ -80,7 +75,7 @@ import {
 } from "./fantasy-ui.ts";
 import { recordRevenueOnce } from "./db/revenue.ts";
 import { redis } from "./utils/rateLimit.ts";
-import { transferUsdcForPrizeWinning } from "./solana-wallet.ts";
+
 
 const tgApi = new Api(config.BOT_TOKEN);
 let cachedBotUsername: string | null = null;
@@ -2735,22 +2730,6 @@ export async function finalizeFantasyGames(): Promise<void> {
       }
 
       try {
-        // Fix 3+4: record pending transfer BEFORE attempting on-chain transfer
-        await recordPendingPrizeTransfer({
-          gameId: game.id,
-          telegramId: award.telegramId,
-          place: award.place,
-          amount,
-          referenceId: game.code,
-        });
-
-        // Fix 3: on-chain transfer FIRST — no internal balance credit yet
-        await transferUsdcForPrizeWinning({
-          telegramId: award.telegramId,
-          amount,
-        });
-
-        // Fix 3: only credit internal balance after transfer confirms
         await confirmPrizeTransfer({
           gameId: game.id,
           memberId: member.id,
@@ -2761,34 +2740,14 @@ export async function finalizeFantasyGames(): Promise<void> {
         });
       } catch (error) {
         payoutFailed = true;
-        // Fix 4: track retry count, mark failed after 3 attempts
-        const retryCount = await getPrizeTransferRetryCount(game.id, award.telegramId).catch(() => 0);
-        const nextRetry = retryCount + 1;
-        if (nextRetry >= 3) {
-          await markPrizeTransferFailed({ gameId: game.id, telegramId: award.telegramId, retryCount: nextRetry }).catch(() => undefined);
-          console.error(
-            `[fantasy] CRITICAL: prize transfer permanently failed after ${nextRetry} attempts — game ${game.code} user ${award.telegramId} amount ${amount}. Manual resolution required.`
-          );
-        } else {
-          await markPrizeTransferFailed({ gameId: game.id, telegramId: award.telegramId, retryCount: nextRetry }).catch(() => undefined);
-          console.error(
-            `[fantasy] Prize transfer attempt ${nextRetry}/3 failed for game ${game.code} user ${award.telegramId}:`,
-            error
-          );
-        }
+        console.error(
+          `[fantasy] Prize credit failed for game ${game.code} user ${award.telegramId} amount ${amount}:`,
+          error
+        );
       }
     }
 
-    // Fix 4: if any payout failed, check if all are stuck (>= 3 retries) — if so mark game stuck
     if (payoutFailed) {
-      const stillPending = await listPendingPrizeTransfers(game.id);
-      const allStuck = stillPending.every((p) => p.transfer_retry_count >= 3);
-      if (allStuck && stillPending.length > 0) {
-        await updateFantasyGame({ gameId: game.id, status: "cancelled" });
-        console.error(
-          `[fantasy] CRITICAL: game ${game.code} marked stuck — all prize transfers failed after max retries. Admin must force-finalize.`
-        );
-      }
       continue;
     }
 
