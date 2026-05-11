@@ -295,20 +295,12 @@ async function findEventBySlug(slug: string): Promise<BayseEventRaw | null> {
 
 async function getEventBySlug(slug: string): Promise<BayseEventRaw | null> {
   const url = `${BAYSE_BASE_URL}/pm/events/slug/${encodeURIComponent(slug)}?currency=USD`;
-  const response = await fetch(url, {
-    headers: { Accept: "application/json" },
-  });
-
-  if (response.status === 404) {
-    return null;
+  try {
+    return await fetchJson<BayseEventRaw>(url, { retries: 1 });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("404")) return null;
+    throw error;
   }
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Bayse API ${response.status}: ${text || response.statusText}`);
-  }
-
-  return (await response.json()) as BayseEventRaw;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -451,8 +443,7 @@ export async function getEventPricing(
 }
 
 export async function getEvent(eventId: string): Promise<unknown> {
-  const url = `${BAYSE_BASE_URL}/pm/events/${eventId}?currency=USD`;
-  return fetchJson<unknown>(url);
+  return fetchJson<unknown>(`${BAYSE_BASE_URL}/pm/events/${eventId}?currency=USD`);
 }
 
 export async function getTradeQuote(input: {

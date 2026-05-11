@@ -61,9 +61,15 @@ const telegramWebhookRateLimit = createRateLimitMiddleware({
   message: "Too many Telegram webhook requests. Please wait a minute.",
 });
 
-// Replay protection for webhook updates
-const processedUpdateIds = new Set<number>();
-const MAX_UPDATE_IDS = 10000; // Keep last 10k update IDs
+// Replay protection for webhook updates — Redis-backed with 24h TTL
+const REPLAY_KEY_PREFIX = "webhook:seen:";
+const REPLAY_TTL_SECONDS = 86400; // 24 hours
+
+async function isReplayedUpdate(updateId: number): Promise<boolean> {
+  const key = `${REPLAY_KEY_PREFIX}${updateId}`;
+  const result = await redis.set(key, "1", "EX", REPLAY_TTL_SECONDS, "NX");
+  return result === null; // null means key already existed
+}
 
 app.set("trust proxy", true);
 app.use(express.json({ limit: "100kb" }));
@@ -116,12 +122,33 @@ bot.catch((error) => {
   error.ctx.reply("Something went wrong. Please try again in a moment.").catch(() => null);
 });
 
+// Per-user bot command rate limit: 20 commands per 60 seconds
+const BOT_USER_RATE_LIMIT = 20;
+const BOT_USER_RATE_WINDOW = 60;
+
+async function checkUserRateLimit(telegramId: number): Promise<boolean> {
+  const key = `rate_limit:bot_user:${telegramId}`;
+  try {
+    const current = await redis.incr(key);
+    if (current === 1) await redis.expire(key, BOT_USER_RATE_WINDOW);
+    return current <= BOT_USER_RATE_LIMIT;
+  } catch {
+    return true; // fail open on Redis error
+  }
+}
+
 function wrap(
   handler: (ctx: Context) => Promise<void>
 ): (ctx: Context) => Promise<void> {
   return async (ctx: Context) => {
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery().catch(() => null);
+    }
+
+    const userId = ctx.from?.id;
+    if (userId && !(await checkUserRateLimit(userId))) {
+      await ctx.reply("You're sending commands too fast. Please slow down.").catch(() => null);
+      return;
     }
 
     const updateId = ctx.update.update_id;
@@ -215,7 +242,7 @@ app.post("/webhook/pajcash/:secret", pajcashWebhookRateLimit, async (req, res) =
   }
 });
 
-app.post("/webhook/:secret", telegramWebhookRateLimit, (req, res) => {
+app.post("/webhook/:secret", telegramWebhookRateLimit, async (req, res) => {
   if (req.params["secret"] !== config.WEBHOOK_PATH_SECRET) {
     console.warn("[webhook] Rejected request with invalid path secret");
     res.sendStatus(403);
@@ -232,20 +259,11 @@ app.post("/webhook/:secret", telegramWebhookRateLimit, (req, res) => {
   // Replay protection: check if we've already processed this update
   const updateId = req.body?.update_id;
   if (typeof updateId === "number") {
-    if (processedUpdateIds.has(updateId)) {
+    const replayed = await isReplayedUpdate(updateId).catch(() => false);
+    if (replayed) {
       console.warn(`[webhook] Ignoring duplicate update_id: ${updateId}`);
       res.sendStatus(200);
       return;
-    }
-
-    processedUpdateIds.add(updateId);
-
-    // Prevent memory leak by limiting stored update IDs
-    if (processedUpdateIds.size > MAX_UPDATE_IDS) {
-      const oldestId = processedUpdateIds.values().next().value;
-      if (oldestId !== undefined) {
-        processedUpdateIds.delete(oldestId);
-      }
     }
   }
 

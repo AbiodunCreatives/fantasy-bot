@@ -23,6 +23,7 @@ export async function recordRevenueOnce(input: {
     telegram_id: input.telegramId ?? null,
     type: input.type,
     amount,
+    idempotency_key: input.type,
   });
 
   if (error) {

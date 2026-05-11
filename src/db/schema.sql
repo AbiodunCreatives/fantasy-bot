@@ -15,10 +15,12 @@ CREATE TABLE IF NOT EXISTS fantasy_revenue (
   telegram_id BIGINT,
   type TEXT NOT NULL,
   amount NUMERIC(10,2) NOT NULL,
+  idempotency_key TEXT UNIQUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fantasy_revenue_type
+-- idempotency_key is the dedup handle; type is a category label only.
+CREATE INDEX IF NOT EXISTS idx_fantasy_revenue_type
   ON fantasy_revenue (type);
 
 CREATE TABLE IF NOT EXISTS fantasy_games (
