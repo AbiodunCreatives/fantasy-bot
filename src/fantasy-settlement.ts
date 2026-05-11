@@ -4,6 +4,7 @@ import {
   finalizeFantasyGames,
   processPendingRefunds,
   sendFantasyRoundReengagements,
+  sendFantasyStartingSoonPings,
   settleFantasyLeagueTrades,
 } from "./fantasy-league.ts";
 import { getDelayUntilNextAlignedTick } from "./utils/aligned-interval.ts";
@@ -27,6 +28,12 @@ async function runFantasySettlementTick(): Promise<void> {
   try {
     await Promise.race([
       (async () => {
+        try {
+          await sendFantasyStartingSoonPings();
+        } catch (error) {
+          console.error("[fantasy-settlement] Starting-soon pings failed:", error);
+        }
+
         try {
           await activateDueFantasyGames();
         } catch (error) {

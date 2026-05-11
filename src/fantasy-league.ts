@@ -4,7 +4,6 @@ import {
   getCurrentRoundSnapshot,
   getEventPricing,
   getEvent,
-  getNextRoundStart,
   getTradeQuote,
   type Round,
   type RoundPricing,
@@ -1923,16 +1922,10 @@ export async function createFantasyLeagueGame(
     );
   }
 
-  const startAt = await getNextRoundStart(FANTASY_ASSET);
-
-  if (!startAt) {
-    throw new Error("No upcoming BTC 15M round found right now.");
-  }
-
-  const endAt = new Date(
-    Date.parse(startAt) + getFantasyDurationMs(normalizedDurationHours)
-  ).toISOString();
-  const virtualStartBalance = getVirtualStartBalance(normalizedEntryFee);
+  // Lobby wait: 10 min for 1hr arenas, 30 min for all others
+  const lobbyWaitMs = normalizedDurationHours === 1 ? 10 * 60 * 1000 : 30 * 60 * 1000;
+  const startAt = new Date(Date.now() + lobbyWaitMs).toISOString();
+  const endAt = new Date(Date.parse(startAt) + getFantasyDurationMs(normalizedDurationHours)).toISOString();  const virtualStartBalance = getVirtualStartBalance(normalizedEntryFee);
   const code = await generateUniqueFantasyGameCode();
   await upsertUserProfile(creatorTelegramId);
 
@@ -2103,6 +2096,33 @@ export async function listFantasyLeagueSnapshots(
   }
 
   return snapshots;
+}
+
+export async function sendFantasyStartingSoonPings(): Promise<void> {
+  const now = Date.now();
+  const windowMs = 10 * 60 * 1000; // 10 minutes
+  const openGames = await listOpenFantasyGames();
+
+  for (const game of openGames) {
+    const msUntilStart = Date.parse(game.start_at) - now;
+    if (msUntilStart > windowMs || msUntilStart <= 0) continue;
+
+    const pingKey = `arena:starting_soon:${game.id}`;
+    const alreadySent = await redis.set(pingKey, "1", "EX", 3600, "NX");
+    if (!alreadySent) continue;
+
+    const members = await listFantasyGameMembers(game.id);
+    const minutesLeft = Math.max(1, Math.round(msUntilStart / 60000));
+    const message = [
+      `⚡ Arena ${game.code} starts in ~${minutesLeft} minute${minutesLeft === 1 ? "" : "s"}!`,
+      "",
+      "Make sure you're ready — trading begins when the arena goes live.",
+    ].join("\n");
+
+    await Promise.all(
+      members.map((member) => safeSendMessage(member.telegram_id, message))
+    );
+  }
 }
 
 export async function activateDueFantasyGames(): Promise<void> {
