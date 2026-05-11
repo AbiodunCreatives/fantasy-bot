@@ -443,7 +443,21 @@ export async function getEventPricing(
 }
 
 export async function getEvent(eventId: string): Promise<unknown> {
-  return fetchJson<unknown>(`${BAYSE_BASE_URL}/pm/events/${eventId}?currency=USD`);
+  const url = `${BAYSE_BASE_URL}/pm/events/${eventId}?currency=USD`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    clearTimeout(timeoutId);
+    return null;
+  }
 }
 
 export async function getTradeQuote(input: {

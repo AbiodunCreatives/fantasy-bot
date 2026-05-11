@@ -2496,9 +2496,15 @@ export async function settleFantasyLeagueTrades(): Promise<FantasyRoundSettlemen
         eventCache.set(trade.event_id, eventPayload);
       }
 
+      if (!eventPayload) {
+        console.warn(`[fantasy] Could not fetch event ${trade.event_id} for settlement, will retry next tick.`);
+        continue;
+      }
+
       const resolvedDirection = inferResolvedDirection(eventPayload);
 
       if (!resolvedDirection) {
+        console.log(`[fantasy] Event ${trade.event_id} not yet resolved, will retry next tick.`);
         continue;
       }
       const eventWindow = extractEventWindow(eventPayload);
