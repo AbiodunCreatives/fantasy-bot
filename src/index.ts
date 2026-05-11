@@ -189,7 +189,7 @@ function matchesHealthCheckToken(
 }
 
 app.get("/", (_req, res) => {
-  res.status(200).send("Bayse fantasy bot is running. Use /health for health checks.");
+  res.status(200).send("HeadlineOdds Arena bot is running. Use /health for health checks.");
 });
 
 app.get("/health", healthRateLimit, async (req, res) => {

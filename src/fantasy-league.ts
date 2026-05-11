@@ -435,7 +435,7 @@ async function generateUniqueFantasyGameCode(): Promise<string> {
     }
   }
 
-  throw new Error("Unable to generate a unique Bayse Fantasy Arena code.");
+  throw new Error("Unable to generate a unique arena code.");
 }
 
 function fantasyTradeRefKey(ref: string): string {
@@ -1328,7 +1328,7 @@ function buildRoundBroadcastMessage(input: {
   const countdown = `${mins}:${secs.toString().padStart(2, "0")}`;
 
   return [
-    "🏆 BAYSE FANTASY ARENA — BTC 15mins ROUND",
+    "🏆 HEADLINEODDS ARENA — BTC 15mins ROUND",
     "",
     `League: ${input.game.code}`,
     `Closes in: ${countdown}`,
@@ -2140,14 +2140,14 @@ export async function activateDueFantasyGames(): Promise<void> {
     const refreshed = (await getFantasyGameById(game.id)) ?? game;
     const leaderboard = await getFantasyLeaderboard(game.id);
     const message = [
-      `🏆 BAYSE FANTASY ARENA ${refreshed.code} IS LIVE`,
+      `🏆 HEADLINEODDS ARENA ${refreshed.code} IS LIVE`,
       "",
       `Players: ${leaderboard.length}`,
       ...buildPrizePoolLines(refreshed.entry_fee, leaderboard.length),
       `Virtual bankroll: ${formatMoney(refreshed.virtual_start_balance)}`,
       "",
       `Duration: ${formatDurationHours(getGameDurationHours(refreshed))}`,
-      "You will receive a fantasy BTC round prompt for each Bayse BTC 15M round until the arena ends.",
+      "You will receive a BTC round prompt for each 15M round until the arena ends.",
     ].join("\n");
 
     await Promise.all(
@@ -2212,6 +2212,11 @@ export async function processFantasyLeagueRound(
   if (Date.parse(round.closingDate) <= Date.now()) {
     return;
   }
+
+  // Activate any arenas whose start_at has passed so round 1 is never missed
+  await activateDueFantasyGames().catch((error) => {
+    console.warn("[fantasy-monitor] Inline activation pass failed:", error);
+  });
 
   const activeGames = await listActiveFantasyGames(new Date().toISOString());
 

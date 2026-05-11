@@ -283,7 +283,7 @@ function buildCreateArenaDurationText(input: {
       maximumFractionDigits: 2,
     })}`,
     "Pick how long the arena should run:",
-    "Bayse runs 4 rounds every hour.",
+    "4 rounds play every hour.",
     "",
     `Available balance: ${formatUsdc(input.balance)}`,
   ].join("\n");
@@ -723,7 +723,7 @@ function buildWalletNairaHelpText(): string {
     "You can also type /wallet fund-ngn <amount_ngn>.",
     "Example: /wallet fund-ngn 10000",
     "",
-    "Bayse will create a PajCash bank transfer order for you.",
+    "A PajCash bank transfer order will be created for you.",
     "Your in-bot balance updates only after native USDC lands in your Solana wallet and the bot sees the deposit.",
   ].join("\n");
 }
@@ -885,7 +885,7 @@ function buildWalletNairaOrderText(input: {
     `${input.accountNumber}`,
     `${input.bankName}`,
     "",
-    "After PajCash completes the order and USDC lands in your Solana wallet, Bayse will credit your in-bot balance.",
+    "After PajCash completes the order and USDC lands in your Solana wallet, your in-bot balance will be credited.",
   ].join("\n");
 }
 
@@ -956,7 +956,7 @@ function buildArenaLiveKeyboard(input: {
   const keyboard = new InlineKeyboard();
 
   if (input.marketUrl) {
-    keyboard.url("Open Bayse", input.marketUrl);
+    keyboard.url("View market", input.marketUrl);
   }
 
   keyboard.text("📊 Leaderboard", `arena:board:${input.code}`);

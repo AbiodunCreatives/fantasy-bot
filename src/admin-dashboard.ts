@@ -796,7 +796,7 @@ function renderDashboardPage(summary: DashboardSummary): string {
     '<section class="hero">',
     '<div class="hero-top">',
     "<div>",
-    "<p class=\"eyebrow\">Bayse Fantasy Operator View</p>",
+    "<p class=\"eyebrow\">HeadlineOdds Arena — Operator View</p>",
     "<h1>Users, value flow, and revenue in one place.</h1>",
     `<p>Generated ${escapeHtml(formatTimestamp(summary.generatedAt))}. This view separates cash in, gameplay volume, and realized platform revenue so the numbers stay honest as the bot scales.</p>`,
     "</div>",
