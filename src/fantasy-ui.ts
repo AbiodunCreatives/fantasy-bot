@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import type { FantasyGame, FantasyLeaderboardEntry } from "./db/fantasy.ts";
 
 export const ARENA_ENTRY_FEE_OPTIONS = [1, 2, 5, 10] as const;
-export const ARENA_DURATION_HOURS_OPTIONS = [3, 9, 12, 24] as const;
+export const ARENA_DURATION_HOURS_OPTIONS = [1, 3, 9, 12, 24] as const;
 export const BAYSE_ROUNDS_PER_HOUR = 4;
 const HOUR_MS = 60 * 60 * 1000;
 
