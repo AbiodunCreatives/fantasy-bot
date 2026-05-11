@@ -13,7 +13,6 @@ import { getBalance, creditBalance } from "./db/balances.ts";
 import {
   applyFantasyTradeSettlement,
   awardFantasyPrize,
-  confirmPrizeTransfer,
   createFantasyGameWithEntry,  getFantasyGameByCode,
   getFantasyGameById,
   getFantasyGameMember,
@@ -2730,7 +2729,7 @@ export async function finalizeFantasyGames(): Promise<void> {
       }
 
       try {
-        await confirmPrizeTransfer({
+        await awardFantasyPrize({
           gameId: game.id,
           memberId: member.id,
           telegramId: award.telegramId,
