@@ -23,8 +23,7 @@ import {
   getLatestFantasyTradeForMember,
   getFantasyTradeForMemberEvent,
   getPrizeTransferRetryCount,
-  incrementRefundRetry,
-  joinFantasyGameWithEntry,
+  incrementRefundRetry,  joinFantasyGameWithEntry,
   listActiveFantasyGames,
   listDueOpenFantasyGames,
   listFantasyGameMembers,
@@ -41,7 +40,6 @@ import {
   markPrizeTransferFailed,
   markRefundCompleted,
   markRefundFailed,
-  persistPendingRefund,
   placeFantasyTradeWithDebit,
   recalculateFantasyPrizePool,
   recordPendingPrizeTransfer,
@@ -83,7 +81,7 @@ import {
 } from "./fantasy-ui.ts";
 import { recordRevenueOnce } from "./db/revenue.ts";
 import { redis } from "./utils/rateLimit.ts";
-import { transferUsdcForArenaEntry, transferUsdcForPrizeWinning, transferUsdcFromTreasury } from "./solana-wallet.ts";
+import { transferUsdcForPrizeWinning } from "./solana-wallet.ts";
 
 const tgApi = new Api(config.BOT_TOKEN);
 let cachedBotUsername: string | null = null;
@@ -1938,26 +1936,14 @@ export async function createFantasyLeagueGame(
   const code = await generateUniqueFantasyGameCode();
   await upsertUserProfile(creatorTelegramId);
 
-  // Fix 2: idempotency lock — prevent double-tap double-debit
+  // Idempotency lock — prevent double-tap double-debit
   const lockKey = `arena:entry:lock:${creatorTelegramId}:${code}`;
   const lockAcquired = await redis.set(lockKey, "1", "EX", 60, "NX");
   if (!lockAcquired) {
     throw new Error("Entry already in progress. Please wait a moment and try again.");
   }
 
-  // Fix 1: persist refund record before on-chain debit
-  const refundRecord = await persistPendingRefund({
-    telegramId: creatorTelegramId,
-    amount: normalizedEntryFee,
-    gameCode: code,
-  });
-
   try {
-    await transferUsdcForArenaEntry({
-      telegramId: creatorTelegramId,
-      amount: normalizedEntryFee,
-    });
-
     const game = await createFantasyGameWithEntry({
       code,
       creatorTelegramId,
@@ -1968,24 +1954,9 @@ export async function createFantasyLeagueGame(
       commissionRate: FANTASY_COMMISSION_RATE,
     });
 
-    await markRefundCompleted(refundRecord.id);
     await redis.del(lockKey);
     return game;
   } catch (error) {
-    // RPC or transfer failed — attempt refund
-    try {
-      await transferUsdcFromTreasury({
-        telegramId: creatorTelegramId,
-        amount: normalizedEntryFee,
-      });
-      await markRefundCompleted(refundRecord.id);
-    } catch (refundError) {
-      const reason = refundError instanceof Error ? refundError.message : String(refundError);
-      await markRefundFailed(refundRecord.id, reason, 0).catch(() => undefined);
-      console.error(
-        `[fantasy] CRITICAL: refund failed for user ${creatorTelegramId} amount ${normalizedEntryFee} game ${code}: ${reason}`
-      );
-    }
     await redis.del(lockKey);
     throw error;
   }
@@ -2002,49 +1973,23 @@ export async function joinFantasyLeagueGame(
     throw new Error("Arena not found.");
   }
 
-  // Fix 2: idempotency lock — prevent double-tap double-debit
+  // Idempotency lock — prevent double-tap double-debit
   const lockKey = `arena:entry:lock:${telegramId}:${game.code}`;
   const lockAcquired = await redis.set(lockKey, "1", "EX", 60, "NX");
   if (!lockAcquired) {
     throw new Error("Entry already in progress. Please wait a moment and try again.");
   }
 
-  // Fix 1: persist refund record before on-chain debit
-  const refundRecord = await persistPendingRefund({
-    telegramId,
-    amount: game.entry_fee,
-    gameCode: game.code,
-  });
-
   try {
-    await transferUsdcForArenaEntry({
-      telegramId,
-      amount: game.entry_fee,
-    });
-
     const joined = await joinFantasyGameWithEntry({
       code: code.trim().toUpperCase(),
       telegramId,
       commissionRate: FANTASY_COMMISSION_RATE,
     });
 
-    await markRefundCompleted(refundRecord.id);
     await redis.del(lockKey);
     return joined;
   } catch (error) {
-    try {
-      await transferUsdcFromTreasury({
-        telegramId,
-        amount: game.entry_fee,
-      });
-      await markRefundCompleted(refundRecord.id);
-    } catch (refundError) {
-      const reason = refundError instanceof Error ? refundError.message : String(refundError);
-      await markRefundFailed(refundRecord.id, reason, 0).catch(() => undefined);
-      console.error(
-        `[fantasy] CRITICAL: refund failed for user ${telegramId} amount ${game.entry_fee} game ${game.code}: ${reason}`
-      );
-    }
     await redis.del(lockKey);
     throw error;
   }
@@ -2056,9 +2001,11 @@ export async function processPendingRefunds(): Promise<void> {
   for (const refund of pending) {
     const nextRetry = refund.retry_count + 1;
     try {
-      await transferUsdcFromTreasury({
-        telegramId: refund.telegram_id,
-        amount: refund.amount,
+      await creditBalance(refund.telegram_id, refund.amount, {
+        entryType: "arena_entry_refund",
+        referenceType: "fantasy_game",
+        referenceId: refund.game_code,
+        idempotencyKey: `refund:${refund.id}`,
       });
       await markRefundCompleted(refund.id);
     } catch (error) {
@@ -2454,13 +2401,6 @@ export async function placeFantasyTradeFromCallbackData(input: {
   }
 
   try {
-    // Transfer USDC from user wallet to treasury for arena entry
-    await transferUsdcForArenaEntry({
-      telegramId: input.telegramId,
-      amount: stake,
-    });
-
-    // After USDC transfer succeeds, debit the balance in the ledger
     await placeFantasyTradeWithDebit({
       gameId: game.id,
       memberId: member.id,
@@ -2473,18 +2413,6 @@ export async function placeFantasyTradeFromCallbackData(input: {
       shares,
     });
   } catch (error) {
-    // If database operation fails, refund the USDC transfer
-    try {
-      await transferUsdcFromTreasury({
-        telegramId: input.telegramId,
-        amount: stake,
-      });
-    } catch (refundError) {
-      console.error(
-        `[fantasy] Failed to refund USDC after trade placement failure for ${input.telegramId}:`,
-        refundError
-      );
-    }
     throw error;
   }
 
