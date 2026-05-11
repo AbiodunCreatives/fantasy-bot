@@ -100,7 +100,7 @@ export default function Play() {
 
           {/* Back link */}
           <div style={{ marginTop: 48, textAlign: 'center' }}>
-            <Link href="/arena" className="btn btn-outline">
+            <Link href="/" className="btn btn-outline">
               ← Back to Arena
             </Link>
           </div>

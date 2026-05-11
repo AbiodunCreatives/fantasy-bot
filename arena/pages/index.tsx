@@ -77,7 +77,7 @@ export default function Home() {
             Pick the right outcome, beat the crowd, and get paid on Solana.
           </p>
           <div className="hero-cta">
-            <Link href="/arena/play" className="btn btn-gold">
+            <Link href="/play" className="btn btn-gold">
               🚀 Play on Telegram
             </Link>
             <a href="#how-it-works" className="btn btn-outline">
@@ -152,7 +152,7 @@ export default function Home() {
               Open the bot, fund your wallet, and make your first prediction in minutes.
             </p>
             <div className="cta-actions">
-              <Link href="/arena/play" className="btn btn-gold">
+              <Link href="/play" className="btn btn-gold">
                 🚀 Start Playing
               </Link>
               <a href="#how-it-works" className="btn btn-outline">
