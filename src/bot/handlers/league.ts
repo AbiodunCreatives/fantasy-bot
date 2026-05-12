@@ -15,6 +15,9 @@ import {
   getFantasyLeagueStatusView,
   getFantasyLeagueBoardText,
   hasPendingFantasyCustomFundAmount,
+  hasPendingCustomArenaFee,
+  savePendingCustomArenaFee,
+  clearPendingCustomArenaFee,
   getFantasyLeagueDetailsByCode,
   getFantasyLeagueJoinPreview,
   joinFantasyLeagueGame,
@@ -54,6 +57,7 @@ import {
   syncFantasyWalletDeposits,
 } from "../../solana-wallet.ts";
 import { createFantasyPajCashOnramp } from "../../pajcash.ts";
+import { isDevUser } from "../../utils/devOverrides.ts";
 
 const START_HOW_IT_WORKS = "start:how";
 const START_LOBBY = "start:lobby";
@@ -81,6 +85,7 @@ const WALLET_NAIRA_CUSTOM = "wallet:naira:custom";
 const WALLET_NAIRA_BACK = "wallet:naira:back";
 const WALLET_WITHDRAW_HELP = "wallet:withdraw";
 const WALLET_BACK = "wallet:back";
+const ARENA_CREATE_CUSTOM = "arena:create:custom";
 const WALLET_NAIRA_MIN_AMOUNT = 1_000;
 const WALLET_NAIRA_MAX_AMOUNT = 20_000;
 const WALLET_NAIRA_PRESET_AMOUNTS = [1_000, 2_000, 5_000, 10_000] as const;
@@ -273,11 +278,15 @@ function buildCreateArenaPickerText(balance: number): string {
   ].join("\n");
 }
 
-function buildCreateArenaPickerKeyboard(): InlineKeyboard {
+function buildCreateArenaPickerKeyboard(telegramId?: number): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
   for (const fee of ARENA_ENTRY_FEE_OPTIONS) {
     keyboard.text(`$${fee}`, `arena:create:${fee}`);
+  }
+
+  if (telegramId && isDevUser(telegramId)) {
+    keyboard.row().text("Custom", ARENA_CREATE_CUSTOM);
   }
 
   keyboard.row().text("🏟 Back to lobby", ARENA_BACK_TO_LOBBY);
@@ -1958,7 +1967,21 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
     await editTradePromptMessage(
       ctx,
       buildCreateArenaPickerText(balance),
-      buildCreateArenaPickerKeyboard()
+      buildCreateArenaPickerKeyboard(ctx.from.id)
+    );
+    return;
+  }
+
+  if (data === ARENA_CREATE_CUSTOM) {
+    if (!isDevUser(ctx.from.id)) {
+      await ctx.answerCallbackQuery("Not available.");
+      return;
+    }
+    await savePendingCustomArenaFee(ctx.from.id);
+    await editTradePromptMessage(
+      ctx,
+      "Type your custom entry fee (e.g. 0.20):",
+      new InlineKeyboard().text("Cancel", ARENA_CREATE)
     );
     return;
   }
@@ -2084,13 +2107,28 @@ export async function handleFantasyTextInput(ctx: Context): Promise<boolean> {
     return false;
   }
 
-  if (!(await hasPendingFantasyCustomFundAmount(ctx.from.id))) {
+  const messageText = (ctx.message?.text ?? "").trim();
+  if (!messageText || messageText.startsWith("/")) {
     return false;
   }
 
-  const messageText = (ctx.message?.text ?? "").trim();
+  // Custom arena entry fee (dev users only)
+  if (await hasPendingCustomArenaFee(ctx.from.id)) {
+    const fee = Number.parseFloat(messageText.replace(/[^0-9.]/g, ""));
+    if (!Number.isFinite(fee) || fee <= 0) {
+      await ctx.reply("Enter a valid amount, e.g. 0.20");
+      return true;
+    }
+    await clearPendingCustomArenaFee(ctx.from.id);
+    const balance = await getBalance(ctx.from.id);
+    await ctx.reply(
+      buildCreateArenaDurationText({ balance, entryFee: fee }),
+      { reply_markup: buildCreateArenaDurationKeyboard(fee) }
+    );
+    return true;
+  }
 
-  if (!messageText || messageText.startsWith("/")) {
+  if (!(await hasPendingFantasyCustomFundAmount(ctx.from.id))) {
     return false;
   }
 
@@ -2374,7 +2412,7 @@ export async function handleLeague(ctx: Context): Promise<void> {
     if (!Number.isFinite(entryFee)) {
       const balance = await getBalance(ctx.from.id);
       await ctx.reply(buildCreateArenaPickerText(balance), {
-        reply_markup: buildCreateArenaPickerKeyboard(),
+        reply_markup: buildCreateArenaPickerKeyboard(ctx.from.id),
       });
       return;
     }

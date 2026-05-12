@@ -547,6 +547,22 @@ export async function clearPendingFantasyCustomFundAmount(
   await redis.del(fantasyCustomFundKey(telegramId));
 }
 
+function fantasyCustomArenaFeeKey(telegramId: number): string {
+  return `fantasy:arena:custom_fee:${telegramId}`;
+}
+
+export async function savePendingCustomArenaFee(telegramId: number): Promise<void> {
+  await redis.set(fantasyCustomArenaFeeKey(telegramId), "1", "EX", FANTASY_CUSTOM_FUND_TTL_SECONDS);
+}
+
+export async function hasPendingCustomArenaFee(telegramId: number): Promise<boolean> {
+  return Boolean(await redis.get(fantasyCustomArenaFeeKey(telegramId)));
+}
+
+export async function clearPendingCustomArenaFee(telegramId: number): Promise<void> {
+  await redis.del(fantasyCustomArenaFeeKey(telegramId));
+}
+
 export async function addFantasyPlayBalance(
   telegramId: number,
   amount: number
