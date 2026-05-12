@@ -261,12 +261,9 @@ export function buildShareInviteUrl(input: {
   const username = normalizeBotUsername(input.botUsername);
   const deepLink = `https://t.me/${username}?start=${encodeURIComponent(input.code)}`;
   const text =
-    `I just created a ${formatMoney(input.entryFee, {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    })} arena on HeadlineOdds Arena.\n\n` +
-    `Join with code ${input.code} - best bankroll takes the pot.\n` +
-    `👉 t.me/${username}?start=${input.code}`;
+    `🏟 I just opened an arena — come trade against me.\n\n` +
+    `⚡ 15-min BTC rounds. Best bankroll wins.\n\n` +
+    `👉 ${deepLink}`;
 
   const shareUrl = new URL("https://t.me/share/url");
   shareUrl.searchParams.set("url", deepLink);
