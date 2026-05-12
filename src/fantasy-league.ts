@@ -2249,6 +2249,11 @@ export async function processFantasyLeagueRound(
       continue;
     }
 
+    // Don't open a new round if the round's opening time is at or after the arena end
+    if (Date.parse(round.openingDate) >= Date.parse(game.end_at)) {
+      continue;
+    }
+
     const members = await listFantasyGameMembers(game.id);
     const leaderboard = await getFantasyLeaderboard(game.id);
     const currentPrice = await getRoundCurrentPrice(pricing);

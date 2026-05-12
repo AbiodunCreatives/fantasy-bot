@@ -1175,7 +1175,7 @@ export async function listFantasyPayouts(
     .from("fantasy_payouts")
     .select("telegram_id, place, amount")
     .eq("game_id", gameId)
-    .eq("prize_transfer_status", "confirmed")
+    .in("prize_transfer_status", ["confirmed", "pending"])
     .order("place", { ascending: true });
 
   if (error) {
