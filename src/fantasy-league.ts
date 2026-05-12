@@ -75,6 +75,7 @@ import {
 import { recordRevenueOnce } from "./db/revenue.ts";
 import { redis } from "./utils/rateLimit.ts";
 import { isDevUser, DEV_MIN_ENTRY_FEE, DEV_VIRTUAL_BANKROLL } from "./utils/devOverrides.ts";
+import { escapeMarkdown } from "./utils/escape.ts";
 
 
 const tgApi = new Api(config.BOT_TOKEN);
@@ -1439,9 +1440,12 @@ function buildRoundSettlementMessage(input: {
   return lines.join("\n");
 }
 
-async function safeSendMessage(chatId: number, text: string, keyboard?: InlineKeyboard) {
+async function safeSendMessage(chatId: number, text: string, keyboard?: InlineKeyboard, parseMode?: "MarkdownV2") {
   await tgApi
-    .sendMessage(chatId, text, keyboard ? { reply_markup: keyboard } : undefined)
+    .sendMessage(chatId, text, {
+      ...(keyboard ? { reply_markup: keyboard } : {}),
+      ...(parseMode ? { parse_mode: parseMode } : {}),
+    })
     .catch((error) => {
       console.warn(`[fantasy] Failed to send message to ${chatId}:`, error);
     });
@@ -2140,7 +2144,7 @@ export async function listFantasyLeagueSnapshots(
 
 export async function sendFantasyStartingSoonPings(): Promise<void> {
   const now = Date.now();
-  const windowMs = 10 * 60 * 1000; // 10 minutes
+  const windowMs = 60 * 1000; // trigger in the final 60 seconds
   const openGames = await listOpenFantasyGames();
 
   for (const game of openGames) {
@@ -2152,15 +2156,20 @@ export async function sendFantasyStartingSoonPings(): Promise<void> {
     if (!alreadySent) continue;
 
     const members = await listFantasyGameMembers(game.id);
-    const minutesLeft = Math.max(1, Math.round(msUntilStart / 60000));
-    const message = [
-      `⚡ Arena ${game.code} starts in ~${minutesLeft} minute${minutesLeft === 1 ? "" : "s"}!`,
-      "",
-      "Make sure you're ready — trading begins when the arena goes live.",
-    ].join("\n");
+    const startsAt = new Date(game.start_at);
 
     await Promise.all(
-      members.map((member) => safeSendMessage(member.telegram_id, message))
+      members.map(async (member) => {
+        for (let i = 0; i < 3; i++) {
+          if (Date.parse(game.start_at) <= Date.now()) break;
+          const minutesLeft = Math.max(1, Math.round((startsAt.getTime() - Date.now()) / 60_000));
+          const text =
+            `⚡️ *Arena ${escapeMarkdown(game.code)} starts in ~${minutesLeft} min\\!*\n` +
+            `_Make sure you're ready — trading begins when the arena goes live\\._`;
+          await safeSendMessage(member.telegram_id, text, undefined, "MarkdownV2");
+          if (i < 2) await new Promise((resolve) => setTimeout(resolve, 10_000));
+        }
+      })
     );
   }
 }
