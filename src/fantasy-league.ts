@@ -74,6 +74,7 @@ import {
 } from "./fantasy-ui.ts";
 import { recordRevenueOnce } from "./db/revenue.ts";
 import { redis } from "./utils/rateLimit.ts";
+import { isDevUser, DEV_MIN_ENTRY_FEE, DEV_VIRTUAL_BANKROLL } from "./utils/devOverrides.ts";
 
 
 const tgApi = new Api(config.BOT_TOKEN);
@@ -1931,11 +1932,13 @@ export async function createFantasyLeagueGame(
 ): Promise<FantasyGame> {
   const normalizedEntryFee = roundMoney(entryFee);
   const normalizedDurationHours = normalizeFantasyDurationHours(durationHours);
+  const devUser = isDevUser(creatorTelegramId);
+  const minFee = devUser ? DEV_MIN_ENTRY_FEE : FANTASY_MIN_ENTRY_FEE;
 
   if (
-    !Number.isInteger(normalizedEntryFee) ||
-    normalizedEntryFee < FANTASY_MIN_ENTRY_FEE ||
-    normalizedEntryFee > FANTASY_MAX_ENTRY_FEE
+    normalizedEntryFee < minFee ||
+    normalizedEntryFee > FANTASY_MAX_ENTRY_FEE ||
+    (!devUser && !Number.isInteger(normalizedEntryFee))
   ) {
     throw new Error(
       `Entry fee must be a whole number between $${FANTASY_MIN_ENTRY_FEE} and $${FANTASY_MAX_ENTRY_FEE}.`
@@ -1945,7 +1948,8 @@ export async function createFantasyLeagueGame(
   // Lobby wait: 10 min for 1hr arenas, 30 min for all others
   const lobbyWaitMs = normalizedDurationHours === 1 ? 10 * 60 * 1000 : 30 * 60 * 1000;
   const startAt = new Date(Date.now() + lobbyWaitMs).toISOString();
-  const endAt = new Date(Date.parse(startAt) + getFantasyDurationMs(normalizedDurationHours)).toISOString();  const virtualStartBalance = getVirtualStartBalance(normalizedEntryFee);
+  const endAt = new Date(Date.parse(startAt) + getFantasyDurationMs(normalizedDurationHours)).toISOString();
+  const virtualStartBalance = devUser ? DEV_VIRTUAL_BANKROLL : getVirtualStartBalance(normalizedEntryFee);
   const code = await generateUniqueFantasyGameCode();
   await upsertUserProfile(creatorTelegramId);
 
