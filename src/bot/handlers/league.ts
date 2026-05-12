@@ -189,10 +189,10 @@ function buildArenaInsufficientBalanceText(
 
 function buildStartWelcomeText(): string {
   return [
-    "HeadlineOdds Arena",
+    "🏆 *HeadlineOdds Arena*",
     "",
-    "BTC fantasy trading with Solana USDC funding.",
-    "Each user gets a separate in-bot Solana wallet for deposits and withdrawals.",
+    "BTC fantasy trading on Solana\\.",
+    "Predict price moves, grow your stack, win real USDC\\.",
   ].join("\n");
 }
 
@@ -232,12 +232,25 @@ function buildStartOnboardingText(input: {
   firstName: string;
   balance: number;
 }): string {
+  const name = input.firstName.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+  const balance = input.balance.toFixed(2).replace(/[.]/g, '\\$&');
   return [
-    `Welcome, ${input.firstName}.`,
+    `👋 *Welcome, ${name}\\!*`,
     "",
-    "HeadlineOdds Arena uses Solana USDC for entry, prizes, and withdrawals.",
-    `Available balance: ${formatUsdc(input.balance)}`,
-    "Open Wallet to view your Deposit address or tap Fund NGN for a PajCash top-up.",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "🏆 *HeadlineOdds Arena*",
+    "_BTC fantasy trading · Real USDC prizes_",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "💡 *How it works*",
+    "• Pay a small entry fee \\($1–$10\\)",
+    "• Get a virtual stack 100× your entry",
+    "• Trade BTC UP/DOWN across 15\\-min rounds",
+    "• Best bankroll at the end wins the prize pool",
+    "",
+    `💳 *Your balance:* \`$${balance} USDC\``,
+    "",
+    "Deposit USDC on Solana to fund your wallet\\.",
   ].join("\n");
 }
 
@@ -1794,6 +1807,7 @@ export async function handleStart(ctx: Context): Promise<void> {
       balance,
     }),
     {
+      parse_mode: "MarkdownV2",
       reply_markup: buildStartOnboardingKeyboard(),
     }
   );
