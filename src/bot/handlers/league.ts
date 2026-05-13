@@ -55,6 +55,7 @@ import {
   processFantasyWalletWithdrawals,
   requestFantasyWalletWithdrawal,
   syncFantasyWalletDeposits,
+  transferTreasuryUsdc,
 } from "../../solana-wallet.ts";
 import { createFantasyPajCashOnramp } from "../../pajcash.ts";
 import { isDevUser } from "../../utils/devOverrides.ts";
@@ -2726,4 +2727,26 @@ export async function handleFantasyJoinDecline(ctx: Context): Promise<void> {
   await ctx.reply(
     `No problem. You can join anytime before the league starts with /league join ${code}`
   );
+}
+
+
+export async function handleAdminWithdraw(ctx: Context): Promise<void> {
+  if (!ctx.from) return
+  if (ctx.from.id !== Number(process.env.ADMIN_USER_ID)) {
+    await ctx.reply("Unauthorized.")
+    return
+  }
+  const args = (ctx.message?.text ?? "").split(/\s+/).slice(1)
+  const amount = Number.parseFloat(args[0] ?? "")
+  const destination = args[1]?.trim() ?? ""
+  if (!Number.isFinite(amount) || amount < 0.5 || !destination) {
+    await ctx.reply("Usage: /adminwithdraw <amount> <solana_address>\nMinimum: $0.50")
+    return
+  }
+  try {
+    const result = await transferTreasuryUsdc({ destinationAddress: destination, amount })
+    await ctx.reply(`Sent $${amount} USDC to ${destination}\nSignature: ${result.signature}`)
+  } catch (error) {
+    await ctx.reply(`Transfer failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }

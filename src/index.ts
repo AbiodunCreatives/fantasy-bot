@@ -23,6 +23,7 @@ import {
   handleStatus,
   handleWithdraw,
   handleWallet,
+  handleAdminWithdraw,
 } from "./bot/handlers/league.ts";
 import { config } from "./config.ts";
 import { supabase } from "./db/client.ts";
@@ -99,6 +100,7 @@ bot.command("status", wrap(handleStatus));
 bot.command("wallet", wrap(handleWallet));
 bot.command("fundngn", wrap(handleFundNgn));
 bot.command("withdraw", wrap(handleWithdraw));
+  bot.command("adminwithdraw", wrap(handleAdminWithdraw));
 bot.callbackQuery(/^flt:/, wrap(handleFantasyLeagueTrade));
 bot.callbackQuery(/^(start|lobby|arena|funds|wallet):/, wrap(handleFantasyLeagueUiAction));
 bot.callbackQuery("fantasy:join:confirm", wrap(handleFantasyJoinConfirm));
@@ -481,3 +483,5 @@ main().catch((error) => {
   console.error("[server] Fatal startup error:", error);
   process.exit(1);
 });
+
+

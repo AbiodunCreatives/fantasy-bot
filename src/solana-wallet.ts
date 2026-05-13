@@ -361,7 +361,7 @@ async function transferUserUsdcToTreasury(input: {
   });
 }
 
-async function transferTreasuryUsdc(input: {
+export async function transferTreasuryUsdc(input: {
   destinationAddress: string;
   amount: number;
 }): Promise<{ signature: string; destinationUsdcAta: string }> {
