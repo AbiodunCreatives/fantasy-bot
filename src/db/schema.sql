@@ -1187,3 +1187,60 @@ BEGIN
   RETURN TRUE;
 END;
 $$;
+
+-- Cross-chain deposits via Dextopus
+CREATE TABLE IF NOT EXISTS fantasy_dextopus_deposits (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  telegram_id BIGINT NOT NULL,
+  deposit_request_id TEXT NOT NULL UNIQUE,
+  deposit_address TEXT NOT NULL,
+  origin_chain_id TEXT NOT NULL,
+  origin_asset TEXT NOT NULL,
+  origin_symbol TEXT NOT NULL DEFAULT '',
+  destination_usdc_amount NUMERIC(20,6) NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'completed', 'failed', 'expired')),
+  execution_status TEXT,
+  origin_tx_hash TEXT,
+  destination_tx_hash TEXT,
+  credited BOOLEAN NOT NULL DEFAULT FALSE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dextopus_deposits_telegram_id
+  ON fantasy_dextopus_deposits (telegram_id);
+
+CREATE INDEX IF NOT EXISTS idx_dextopus_deposits_status
+  ON fantasy_dextopus_deposits (status)
+  WHERE status = 'pending';
+
+
+-- Cross-chain deposits via Dextopus
+CREATE TABLE IF NOT EXISTS fantasy_dextopus_deposits (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  telegram_id BIGINT NOT NULL,
+  deposit_request_id TEXT NOT NULL UNIQUE,
+  deposit_address TEXT NOT NULL,
+  origin_chain_id TEXT NOT NULL,
+  origin_asset TEXT NOT NULL,
+  origin_symbol TEXT NOT NULL DEFAULT '',
+  destination_usdc_amount NUMERIC(20,6) NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'completed', 'failed', 'expired')),
+  execution_status TEXT,
+  origin_tx_hash TEXT,
+  destination_tx_hash TEXT,
+  credited BOOLEAN NOT NULL DEFAULT FALSE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dextopus_deposits_telegram_id
+  ON fantasy_dextopus_deposits (telegram_id);
+
+CREATE INDEX IF NOT EXISTS idx_dextopus_deposits_status_pending
+  ON fantasy_dextopus_deposits (status)
+  WHERE status = 'pending';

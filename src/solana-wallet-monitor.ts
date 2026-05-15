@@ -2,6 +2,7 @@ import { config } from "./config.ts";
 import {
   processFantasyWalletWithdrawals,
   syncFantasyWalletDeposits,
+  syncCrossChainDeposits,
 } from "./solana-wallet.ts";
 import { getDelayUntilNextAlignedTick } from "./utils/aligned-interval.ts";
 
@@ -27,6 +28,12 @@ async function runSolanaWalletMonitorTick(): Promise<void> {
       await processFantasyWalletWithdrawals();
     } catch (error) {
       console.error("[solana-wallet] Withdrawal processing failed:", error);
+    }
+
+    try {
+      await syncCrossChainDeposits();
+    } catch (error) {
+      console.error("[dextopus] Cross-chain deposit sync failed:", error);
     }
   } finally {
     solanaWalletMonitorInFlight = false;

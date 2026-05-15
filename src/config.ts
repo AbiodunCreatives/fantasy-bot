@@ -109,6 +109,8 @@ const envSchema = z.object({
     .positive()
     .default(60_000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  DEXTOPUS_PARTNER_FEE_RECIPIENT: optionalString,
+  DEXTOPUS_PARTNER_FEE_BPS: z.coerce.number().int().nonnegative().default(0),
 });
 
 const parsed = envSchema.safeParse(process.env);

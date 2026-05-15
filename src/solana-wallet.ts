@@ -632,3 +632,168 @@ export async function transferUsdcFromTreasury(input: {
     })
   ).signature;
 }
+
+// ─── Dextopus cross-chain deposit ────────────────────────────────────────────
+
+import {
+  createDextopusDeposit,
+  getDextopusDepositStatus,
+} from "./dextopus.ts";
+import {
+  createDextopusDepositRecord,
+  listPendingDextopusDeposits,
+  updateDextopusDepositStatus,
+  type DextopusDeposit,
+} from "./db/dextopus.ts";
+
+export interface CrossChainDepositRequest {
+  telegramId: number;
+  originChainId: string;
+  originAsset: string;
+  originSymbol: string;
+  /** Amount in smallest unit of the origin asset */
+  amountRaw: string;
+}
+
+export interface CrossChainDepositResult {
+  depositAddress: string;
+  depositRequestId: string;
+  expectedUsdcOut: number;
+  expiresInSeconds: number;
+}
+
+/**
+ * Create a Dextopus cross-chain deposit request.
+ * The returned depositAddress is shown to the user — they send from their own wallet.
+ * Destination is always the user's in-bot Solana USDC wallet.
+ */
+export async function createCrossChainDeposit(
+  req: CrossChainDepositRequest
+): Promise<CrossChainDepositResult> {
+  const wallet = await ensureFantasyWallet(req.telegramId);
+
+  const partnerFees =
+    config.DEXTOPUS_PARTNER_FEE_RECIPIENT && config.DEXTOPUS_PARTNER_FEE_BPS > 0
+      ? [
+          {
+            recipient: config.DEXTOPUS_PARTNER_FEE_RECIPIENT,
+            fee: config.DEXTOPUS_PARTNER_FEE_BPS,
+          },
+        ]
+      : undefined;
+
+  const quote = await createDextopusDeposit({
+    originChainId: req.originChainId,
+    destinationChainId: 792703809, // Solana mainnet chain ID used by Dextopus
+    originAsset: req.originAsset,
+    destinationAsset: config.SOLANA_USDC_MINT,
+    amount: req.amountRaw,
+    recipient: wallet.owner_address,
+    refundTo: wallet.owner_address,
+    ...(partnerFees ? { partnerFees } : {}),
+  });
+
+  const expectedUsdcOut =
+    Number(quote.amountOut) / 1_000_000; // USDC has 6 decimals
+
+  await createDextopusDepositRecord({
+    telegramId: req.telegramId,
+    depositRequestId: quote.depositRequestId,
+    depositAddress: quote.depositAddress,
+    originChainId: String(req.originChainId),
+    originAsset: req.originAsset,
+    originSymbol: req.originSymbol,
+    destinationUsdcAmount: expectedUsdcOut,
+    expiresInSeconds: quote.expiresInSeconds,
+  });
+
+  return {
+    depositAddress: quote.depositAddress,
+    depositRequestId: quote.depositRequestId,
+    expectedUsdcOut,
+    expiresInSeconds: quote.expiresInSeconds,
+  };
+}
+
+/**
+ * Poll all pending Dextopus deposits and credit the user's balance
+ * when a deposit reaches a terminal completed state.
+ */
+export async function syncCrossChainDeposits(): Promise<void> {
+  const pending = await listPendingDextopusDeposits();
+
+  for (const deposit of pending) {
+    // Skip expired deposits
+    if (new Date(deposit.expires_at) < new Date()) {
+      await updateDextopusDepositStatus(deposit.deposit_request_id, {
+        status: "expired",
+      });
+      continue;
+    }
+
+    try {
+      const statusRes = await getDextopusDepositStatus(
+        deposit.deposit_request_id
+      );
+
+      const originTxHash = statusRes.originTransactionHashes[0] ?? undefined;
+      const destinationTxHash =
+        statusRes.destinationTransactionHashes[0] ?? undefined;
+
+      const isCompleted =
+        statusRes.status === "completed" ||
+        statusRes.executionStatus === "completed";
+      const isFailed =
+        statusRes.status === "failed" ||
+        statusRes.executionStatus === "failed";
+
+      if (isCompleted && !deposit.credited) {
+        // Credit the user's in-bot balance
+        await creditBalance(deposit.telegram_id, deposit.destination_usdc_amount, {
+          entryType: "deposit",
+          referenceType: "dextopus_deposit",
+          referenceId: deposit.deposit_request_id,
+          idempotencyKey: `dextopus_deposit:${deposit.deposit_request_id}`,
+          metadata: {
+            originChainId: deposit.origin_chain_id,
+            originAsset: deposit.origin_asset,
+            originSymbol: deposit.origin_symbol,
+            originTxHash,
+            destinationTxHash,
+          },
+        });
+
+        await updateDextopusDepositStatus(deposit.deposit_request_id, {
+          status: "completed",
+          executionStatus: statusRes.executionStatus,
+          originTxHash,
+          destinationTxHash,
+          credited: true,
+        });
+
+        console.log(
+          `[dextopus] Credited ${deposit.destination_usdc_amount} USDC to user ${deposit.telegram_id} (${deposit.deposit_request_id})`
+        );
+      } else if (isFailed) {
+        await updateDextopusDepositStatus(deposit.deposit_request_id, {
+          status: "failed",
+          executionStatus: statusRes.executionStatus,
+          originTxHash,
+          destinationTxHash,
+        });
+      } else {
+        // Still in progress — update tx hashes if available
+        await updateDextopusDepositStatus(deposit.deposit_request_id, {
+          executionStatus: statusRes.executionStatus,
+          ...(originTxHash ? { originTxHash } : {}),
+          ...(destinationTxHash ? { destinationTxHash } : {}),
+        });
+      }
+    } catch (error) {
+      console.error(
+        `[dextopus] Failed to sync deposit ${deposit.deposit_request_id}:`,
+        error
+      );
+    }
+  }
+}

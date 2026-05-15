@@ -56,6 +56,7 @@ import {
   requestFantasyWalletWithdrawal,
   syncFantasyWalletDeposits,
   transferTreasuryUsdc,
+  createCrossChainDeposit,
 } from "../../solana-wallet.ts";
 import { createFantasyPajCashOnramp } from "../../pajcash.ts";
 import { isDevUser } from "../../utils/devOverrides.ts";
@@ -86,6 +87,7 @@ const WALLET_NAIRA_CUSTOM = "wallet:naira:custom";
 const WALLET_NAIRA_BACK = "wallet:naira:back";
 const WALLET_WITHDRAW_HELP = "wallet:withdraw";
 const WALLET_BACK = "wallet:back";
+const WALLET_CROSS_CHAIN = "wallet:cross";
 const ARENA_CREATE_CUSTOM = "arena:create:custom";
 const WALLET_NAIRA_MIN_AMOUNT = 1_000;
 const WALLET_NAIRA_MAX_AMOUNT = 20_000;
@@ -730,9 +732,55 @@ function buildWalletKeyboard(): InlineKeyboard {
     .text("🔄 Refresh deposits", WALLET_REFRESH)
     .text("💵 Fund NGN", WALLET_NAIRA_HELP)
     .row()
+    .text("🌐 Deposit from other chain", WALLET_CROSS_CHAIN)
+    .row()
     .text("🎮 Withdraw help", WALLET_WITHDRAW_HELP)
     .row()
     .text("🏟 Browse arenas", WALLET_BACK);
+}
+
+function buildWalletCrossChainHelpText(): string {
+  return [
+    "🌐 Deposit from Another Chain",
+    "",
+    "Send any supported asset from Bitcoin, Tron, Ethereum, or 70+ other chains.",
+    "Dextopus converts it automatically and delivers USDC to your in-bot Solana wallet.",
+    "",
+    "Usage:",
+    "/wallet deposit-cross <chainId> <tokenAddress> <amountInSmallestUnit>",
+    "",
+    "Examples:",
+    "• USDT from Tron (10 USDT):",
+    "  /wallet deposit-cross 728126428 TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t 10000000",
+    "",
+    "• USDC from Ethereum (5 USDC):",
+    "  /wallet deposit-cross 1 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 5000000",
+    "",
+    "Amounts are in the token's smallest unit (e.g. 1 USDT = 1000000).",
+    "A deposit address will be generated — send your funds to it within the expiry window.",
+  ].join("\n");
+}
+
+function buildWalletCrossChainResultText(input: {
+  depositAddress: string;
+  depositRequestId: string;
+  originSymbol: string;
+  expectedUsdcOut: number;
+  expiresInSeconds: number;
+}): string {
+  const expiryMinutes = Math.round(input.expiresInSeconds / 60);
+  return [
+    "🌐 Cross-Chain Deposit Address",
+    "",
+    `Send your ${input.originSymbol} to:`,
+    input.depositAddress,
+    "",
+    `Expected credit: ~${formatUsdc(input.expectedUsdcOut)}`,
+    `Expires in: ${expiryMinutes} minutes`,
+    "",
+    "Once your transaction confirms, Dextopus converts it and USDC arrives in your in-bot wallet automatically.",
+    "Use /wallet to check your balance.",
+  ].join("\n");
 }
 
 function buildWalletNairaHelpText(): string {
@@ -1906,6 +1954,12 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
     return;
   }
 
+  if (data === WALLET_CROSS_CHAIN) {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+    await editTradePromptMessage(ctx, buildWalletCrossChainHelpText(), buildWalletKeyboard());
+    return;
+  }
+
   if (data === WALLET_NAIRA_HELP) {
     await clearPendingFantasyCustomFundAmount(ctx.from.id);
     await editTradePromptMessage(
@@ -2227,6 +2281,83 @@ export async function handleWallet(ctx: Context): Promise<void> {
       }
 
       await ctx.reply(message);
+    }
+
+    return;
+  }
+
+  if (subcommand === "deposit-cross") {
+    // Usage: /wallet deposit-cross <chainId> <tokenAddress> <amountRaw>
+    const originChainId = args[1]?.trim() ?? "";
+    const originAsset = args[2]?.trim() ?? "";
+    const amountRaw = args[3]?.trim() ?? "";
+
+    if (!originChainId || !originAsset || !amountRaw || !/^\d+$/.test(amountRaw)) {
+      await ctx.reply(buildWalletCrossChainHelpText(), {
+        reply_markup: buildWalletKeyboard(),
+      });
+      return;
+    }
+
+    try {
+      const result = await createCrossChainDeposit({
+        telegramId: ctx.from.id,
+        originChainId,
+        originAsset,
+        originSymbol: originAsset.length > 10 ? originAsset.slice(0, 6) + "…" : originAsset,
+        amountRaw,
+      });
+      await ctx.reply(
+        buildWalletCrossChainResultText({
+          depositAddress: result.depositAddress,
+          depositRequestId: result.depositRequestId,
+          originSymbol: originAsset,
+          expectedUsdcOut: result.expectedUsdcOut,
+          expiresInSeconds: result.expiresInSeconds,
+        }),
+        { reply_markup: buildWalletKeyboard() }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Something went wrong.";
+      await ctx.reply(`Cross-chain deposit failed: ${message}`, {
+        reply_markup: buildWalletKeyboard(),
+      });
+    }
+
+    return;
+  }
+
+  if (subcommand === "deposit-cross") {
+    const originChainId = args[1]?.trim() ?? "";
+    const originAsset = args[2]?.trim() ?? "";
+    const amountRaw = args[3]?.trim() ?? "";
+
+    if (!originChainId || !originAsset || !amountRaw || !/^\d+$/.test(amountRaw)) {
+      await ctx.reply(buildWalletCrossChainHelpText(), { reply_markup: buildWalletKeyboard() });
+      return;
+    }
+
+    try {
+      const result = await createCrossChainDeposit({
+        telegramId: ctx.from.id,
+        originChainId,
+        originAsset,
+        originSymbol: originAsset,
+        amountRaw,
+      });
+      await ctx.reply(
+        buildWalletCrossChainResultText({
+          depositAddress: result.depositAddress,
+          depositRequestId: result.depositRequestId,
+          originSymbol: originAsset,
+          expectedUsdcOut: result.expectedUsdcOut,
+          expiresInSeconds: result.expiresInSeconds,
+        }),
+        { reply_markup: buildWalletKeyboard() }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Something went wrong.";
+      await ctx.reply(`Cross-chain deposit failed: ${message}`, { reply_markup: buildWalletKeyboard() });
     }
 
     return;
