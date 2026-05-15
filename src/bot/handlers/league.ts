@@ -743,23 +743,15 @@ function buildWalletCrossChainHelpText(): string {
   return [
     "🌐 Deposit from Another Chain",
     "",
-    "Send any supported asset from Bitcoin, Tron, Ethereum, or 70+ other chains.",
-    "Dextopus converts it automatically and delivers USDC to your in-bot Solana wallet.",
+    "Send from Bitcoin, Tron, Ethereum, or 70+ chains — arrives as USDC in your wallet.",
     "",
-    "Usage:",
-    "/wallet deposit-cross <chainId> <tokenAddress> <amount> [decimals]",
-    "",
-    "• decimals defaults to 6 (USDT/USDC). Pass 18 for ETH/ERC-20 tokens.",
+    "/wallet deposit-cross <chainId> <tokenAddress> <amount>",
     "",
     "Examples:",
     "• 10 USDT from Tron:",
     "  /wallet deposit-cross 728126428 TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t 10",
-    "",
     "• 5 USDC from Ethereum:",
     "  /wallet deposit-cross 1 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 5",
-    "",
-    "• 0.5 ETH:",
-    "  /wallet deposit-cross 1 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 0.5 18",
   ].join("\n");
 }
 
