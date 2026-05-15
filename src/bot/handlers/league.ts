@@ -747,17 +747,19 @@ function buildWalletCrossChainHelpText(): string {
     "Dextopus converts it automatically and delivers USDC to your in-bot Solana wallet.",
     "",
     "Usage:",
-    "/wallet deposit-cross <chainId> <tokenAddress> <amountInSmallestUnit>",
+    "/wallet deposit-cross <chainId> <tokenAddress> <amount> [decimals]",
+    "",
+    "• decimals defaults to 6 (USDT/USDC). Pass 18 for ETH/ERC-20 tokens.",
     "",
     "Examples:",
-    "• USDT from Tron (10 USDT):",
-    "  /wallet deposit-cross 728126428 TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t 10000000",
+    "• 10 USDT from Tron:",
+    "  /wallet deposit-cross 728126428 TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t 10",
     "",
-    "• USDC from Ethereum (5 USDC):",
-    "  /wallet deposit-cross 1 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 5000000",
+    "• 5 USDC from Ethereum:",
+    "  /wallet deposit-cross 1 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 5",
     "",
-    "Amounts are in the token's smallest unit (e.g. 1 USDT = 1000000).",
-    "A deposit address will be generated — send your funds to it within the expiry window.",
+    "• 0.5 ETH:",
+    "  /wallet deposit-cross 1 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 0.5 18",
   ].join("\n");
 }
 
@@ -2330,12 +2332,16 @@ export async function handleWallet(ctx: Context): Promise<void> {
   if (subcommand === "deposit-cross") {
     const originChainId = args[1]?.trim() ?? "";
     const originAsset = args[2]?.trim() ?? "";
-    const amountRaw = args[3]?.trim() ?? "";
+    const humanAmount = args[3]?.trim() ?? "";
+    const decimals = Number.parseInt(args[4]?.trim() ?? "6", 10);
 
-    if (!originChainId || !originAsset || !amountRaw || !/^\d+$/.test(amountRaw)) {
+    if (!originChainId || !originAsset || !humanAmount || !Number.isFinite(Number(humanAmount)) || Number(humanAmount) <= 0) {
       await ctx.reply(buildWalletCrossChainHelpText(), { reply_markup: buildWalletKeyboard() });
       return;
     }
+
+    // Convert human amount to smallest unit
+    const amountRaw = BigInt(Math.round(Number(humanAmount) * 10 ** decimals)).toString();
 
     try {
       const result = await createCrossChainDeposit({
