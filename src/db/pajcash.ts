@@ -167,6 +167,79 @@ export async function listRecentPajCashOnramps(
     .from("fantasy_pajcash_onramps")
     .select("*")
     .eq("telegram_id", telegramId)
+    .eq("transaction_type", "ON_RAMP")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []).map((row) =>
+    normalizePajCashOnramp(row as PajCashOnrampRow)
+  );
+}
+
+export async function createPajCashOfframpRecord(input: {
+  orderId: string;
+  telegramId: number;
+  senderAddress: string;
+  depositAddress: string;
+  mint: string;
+  chain: string;
+  currency: string;
+  bankId: string;
+  accountNumber: string;
+  usdcAmount: number;
+  fiatAmount: number;
+  rate: number;
+  fee: number;
+  rawPayload: Record<string, unknown>;
+}): Promise<PajCashOnramp> {
+  await upsertUserProfile(input.telegramId);
+
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("fantasy_pajcash_onramps")
+    .insert({
+      order_id: input.orderId,
+      telegram_id: input.telegramId,
+      recipient_address: input.depositAddress,
+      sender: input.senderAddress,
+      mint: input.mint,
+      chain: input.chain,
+      currency: input.currency,
+      bank_name: input.bankId,
+      account_number: input.accountNumber,
+      fiat_amount: roundMoney(input.fiatAmount),
+      expected_usdc_amount: roundUsdc(input.usdcAmount),
+      rate: roundUsdc(input.rate),
+      fee: roundUsdc(input.fee),
+      status: "INIT",
+      transaction_type: "OFF_RAMP",
+      raw_payload: input.rawPayload,
+      created_at: now,
+      updated_at: now,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return normalizePajCashOnramp(data as PajCashOnrampRow);
+}
+
+export async function listRecentPajCashOfframps(
+  telegramId: number,
+  limit = 4
+): Promise<PajCashOnramp[]> {
+  const { data, error } = await supabase
+    .from("fantasy_pajcash_onramps")
+    .select("*")
+    .eq("telegram_id", telegramId)
+    .eq("transaction_type", "OFF_RAMP")
     .order("created_at", { ascending: false })
     .limit(limit);
 

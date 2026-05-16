@@ -237,6 +237,11 @@ CREATE INDEX IF NOT EXISTS idx_fantasy_pajcash_onramps_telegram_id_created_at
 CREATE INDEX IF NOT EXISTS idx_fantasy_pajcash_onramps_status_updated_at
   ON fantasy_pajcash_onramps (status, updated_at DESC);
 
+-- Offramp orders reuse fantasy_pajcash_onramps with transaction_type = 'OFF_RAMP'
+CREATE INDEX IF NOT EXISTS idx_fantasy_pajcash_offramps_telegram_id_created_at
+  ON fantasy_pajcash_onramps (telegram_id, created_at DESC)
+  WHERE transaction_type = 'OFF_RAMP';
+
 CREATE OR REPLACE FUNCTION create_fantasy_game_with_entry(
   p_code TEXT,
   p_creator_telegram_id BIGINT,

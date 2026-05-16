@@ -30,8 +30,12 @@ import {
   saveFantasyNextRoundReminder,
   savePendingFantasyCustomFundAmount,
   savePendingFantasyLeagueJoin,
+  saveOfframpSession,
+  loadOfframpSession,
+  clearOfframpSession,
   FANTASY_MIN_ENTRY_FEE,
   type FantasyTradePlacementResult,
+  type OfframpSessionState,
 } from "../../fantasy-league.ts";
 import {
   ARENA_DURATION_HOURS_OPTIONS,
@@ -58,7 +62,7 @@ import {
   transferTreasuryUsdc,
   createCrossChainDeposit,
 } from "../../solana-wallet.ts";
-import { createFantasyPajCashOnramp } from "../../pajcash.ts";
+import { createFantasyPajCashOnramp, getBanks, confirmBankAccount, createFantasyPajCashOfframp, PAJCASH_OFFRAMP_MIN_USDC } from "../../pajcash.ts";
 import { isDevUser } from "../../utils/devOverrides.ts";
 
 const START_HOW_IT_WORKS = "start:how";
@@ -92,6 +96,9 @@ const ARENA_CREATE_CUSTOM = "arena:create:custom";
 const WALLET_NAIRA_MIN_AMOUNT = 1_000;
 const WALLET_NAIRA_MAX_AMOUNT = 20_000;
 const WALLET_NAIRA_PRESET_AMOUNTS = [1_000, 2_000, 5_000, 10_000] as const;
+
+const OFFRAMP_CANCEL = "offramp:cancel";
+const OFFRAMP_CONFIRM_PREFIX = "offramp:confirm:";
 
 type FantasyLeagueStatusViewData = Awaited<
   ReturnType<typeof getFantasyLeagueStatusView>
@@ -2021,6 +2028,117 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
     return;
   }
 
+  if (data === OFFRAMP_CANCEL) {
+    await clearOfframpSession(ctx.from.id);
+    await ctx.editMessageText("Offramp cancelled.").catch(() => null);
+    return;
+  }
+
+  if (data.startsWith("offramp:bank:")) {
+    const parts = data.slice("offramp:bank:".length).split(":");
+    const bankId = parts[0] ?? "";
+    const bankName = parts.slice(1).join(":") || bankId;
+
+    const session = await loadOfframpSession(ctx.from.id);
+
+    if (!session?.accountNumber) {
+      await ctx.editMessageText("Session expired. Please try /offrampngn again.").catch(() => null);
+      return;
+    }
+
+    try {
+      const confirmation = await confirmBankAccount({ bankId, accountNumber: session.accountNumber });
+      const accountName = confirmation.accountName;
+
+      await saveOfframpSession(ctx.from.id, {
+        step: "awaiting_usdc_amount",
+        bankId,
+        bankName: confirmation.bank?.name ?? bankName,
+        accountNumber: session.accountNumber,
+        accountName,
+      });
+
+      await ctx.editMessageText(
+        [
+          `Account: ${accountName}`,
+          `Account number: ${session.accountNumber}`,
+          `Bank: ${confirmation.bank?.name ?? bankName}`,
+          "",
+          `Enter USDC amount to offramp (minimum ${formatUsdc(PAJCASH_OFFRAMP_MIN_USDC)}):`,
+        ].join("\n"),
+        { reply_markup: buildOfframpCancelKeyboard() }
+      ).catch(() =>
+        ctx.reply(
+          `Account confirmed: ${accountName}\n\nEnter USDC amount (minimum ${formatUsdc(PAJCASH_OFFRAMP_MIN_USDC)}):`,
+          { reply_markup: buildOfframpCancelKeyboard() }
+        )
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not confirm account.";
+      await ctx.editMessageText(message, { reply_markup: buildOfframpCancelKeyboard() }).catch(() =>
+        ctx.reply(message, { reply_markup: buildOfframpCancelKeyboard() })
+      );
+    }
+
+    return;
+  }
+
+  if (data.startsWith(OFFRAMP_CONFIRM_PREFIX)) {
+    await clearOfframpSession(ctx.from.id);
+
+    let parsed: { bankId: string; accountNumber: string; usdcAmount: number; accountName: string; bankName: string };
+    try {
+      parsed = JSON.parse(
+        Buffer.from(data.slice(OFFRAMP_CONFIRM_PREFIX.length), "base64").toString("utf8")
+      ) as typeof parsed;
+    } catch {
+      await ctx.editMessageText("Something went wrong. Please try /offrampngn again.").catch(() => null);
+      return;
+    }
+
+    try {
+      const order = await createFantasyPajCashOfframp({
+        telegramId: ctx.from.id,
+        bankId: parsed.bankId,
+        accountNumber: parsed.accountNumber,
+        usdcAmount: parsed.usdcAmount,
+      });
+
+      await ctx.editMessageText(
+        buildOfframpOrderText({
+          orderId: order.order_id,
+          usdcAmount: order.expected_usdc_amount,
+          fiatAmount: order.fiat_amount,
+          accountName: parsed.accountName,
+          accountNumber: parsed.accountNumber,
+          bankName: parsed.bankName,
+          depositAddress: order.recipient_address ?? "",
+        }),
+        { reply_markup: buildWalletKeyboard() }
+      ).catch(() =>
+        ctx.reply(
+          buildOfframpOrderText({
+            orderId: order.order_id,
+            usdcAmount: order.expected_usdc_amount,
+            fiatAmount: order.fiat_amount,
+            accountName: parsed.accountName,
+            accountNumber: parsed.accountNumber,
+            bankName: parsed.bankName,
+            depositAddress: order.recipient_address ?? "",
+          }),
+          { reply_markup: buildWalletKeyboard() }
+        )
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Something went wrong.";
+      await ctx.editMessageText(message, { reply_markup: buildWalletKeyboard() }).catch(() =>
+        ctx.reply(message, { reply_markup: buildWalletKeyboard() })
+      );
+    }
+
+    return;
+  }
+
   if (data === ARENA_CREATE_CUSTOM) {
     if (!isDevUser(ctx.from.id)) {
       await ctx.answerCallbackQuery("Not available.");
@@ -2175,6 +2293,111 @@ export async function handleFantasyTextInput(ctx: Context): Promise<boolean> {
       { reply_markup: buildCreateArenaDurationKeyboard(fee) }
     );
     return true;
+  }
+
+  // Offramp session handling
+  const offrampSession = await loadOfframpSession(ctx.from.id);
+
+  if (offrampSession) {
+    if (offrampSession.step === "awaiting_bank_account") {
+      const accountNumber = messageText.replace(/\D/g, "");
+
+      if (accountNumber.length < 10) {
+        await ctx.reply("Enter a valid 10-digit bank account number.", {
+          reply_markup: buildOfframpCancelKeyboard(),
+        });
+        return true;
+      }
+
+      // Fetch banks and confirm account
+      try {
+        const banks = await getBanks();
+
+        if (banks.length === 0) {
+          await ctx.reply("No banks available right now. Please try again later.", {
+            reply_markup: buildOfframpCancelKeyboard(),
+          });
+          return true;
+        }
+
+        // We need the user to pick a bank — show a simplified prompt
+        // Store account number and ask for bank selection via inline keyboard
+        await saveOfframpSession(ctx.from.id, {
+          step: "awaiting_bank_account",
+          accountNumber,
+        });
+
+        const bankButtons = banks.slice(0, 20); // cap at 20 to avoid oversized keyboard
+        const keyboard = new InlineKeyboard();
+
+        for (let i = 0; i < bankButtons.length; i += 2) {
+          const row = bankButtons.slice(i, i + 2);
+          for (const bank of row) {
+            keyboard.text(bank.name, `offramp:bank:${bank.id}:${bank.name.slice(0, 20)}`);
+          }
+          keyboard.row();
+        }
+
+        keyboard.text("❌ Cancel", OFFRAMP_CANCEL);
+
+        await ctx.reply(`Account number: ${accountNumber}\n\nSelect your bank:`, {
+          reply_markup: keyboard,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Something went wrong.";
+        await ctx.reply(message, { reply_markup: buildOfframpCancelKeyboard() });
+      }
+
+      return true;
+    }
+
+    if (offrampSession.step === "awaiting_usdc_amount") {
+      const usdcAmount = Number.parseFloat(messageText.replace(/[^0-9.]/g, ""));
+
+      if (!Number.isFinite(usdcAmount) || usdcAmount < PAJCASH_OFFRAMP_MIN_USDC) {
+        await ctx.reply(
+          `Enter a valid USDC amount (minimum ${formatUsdc(PAJCASH_OFFRAMP_MIN_USDC)}).`,
+          { reply_markup: buildOfframpCancelKeyboard() }
+        );
+        return true;
+      }
+
+      const balance = await getBalance(ctx.from.id);
+
+      if (balance < usdcAmount) {
+        await ctx.reply(
+          `Insufficient balance. Available: ${formatUsdc(balance)}`,
+          { reply_markup: buildOfframpCancelKeyboard() }
+        );
+        return true;
+      }
+
+      const encodedData = Buffer.from(
+        JSON.stringify({
+          bankId: offrampSession.bankId,
+          accountNumber: offrampSession.accountNumber,
+          usdcAmount,
+          accountName: offrampSession.accountName,
+          bankName: offrampSession.bankName,
+        })
+      ).toString("base64");
+
+      await ctx.reply(
+        [
+          "Confirm offramp:",
+          "",
+          `Account: ${offrampSession.accountName}`,
+          `Account number: ${offrampSession.accountNumber}`,
+          `Bank: ${offrampSession.bankName}`,
+          `USDC to debit: ${formatUsdc(usdcAmount)}`,
+          "",
+          "Your balance will be debited immediately.",
+        ].join("\n"),
+        { reply_markup: buildOfframpConfirmKeyboard(encodedData) }
+      );
+
+      return true;
+    }
   }
 
   if (!(await hasPendingFantasyCustomFundAmount(ctx.from.id))) {
@@ -2391,6 +2614,90 @@ export async function handleWallet(ctx: Context): Promise<void> {
   await ctx.reply(buildWalletCommandHelpText(), {
     reply_markup: buildWalletKeyboard(),
   });
+}
+
+// ── Offramp (USDC → NGN) ─────────────────────────────────────────────────────
+
+function buildOfframpHelpText(): string {
+  return [
+    "💸 Offramp USDC → Naira",
+    "",
+    `Minimum: ${PAJCASH_OFFRAMP_MIN_USDC} USDC`,
+    "",
+    "Step 1: Enter your Nigerian bank account number.",
+    "Step 2: Confirm the account name.",
+    "Step 3: Enter the USDC amount to offramp.",
+    "",
+    "Your in-bot balance will be debited immediately.",
+    "PajCash will send Naira to your bank account.",
+  ].join("\n");
+}
+
+function buildOfframpCancelKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text("❌ Cancel", OFFRAMP_CANCEL);
+}
+
+function buildOfframpConfirmKeyboard(encodedData: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("✅ Confirm", `${OFFRAMP_CONFIRM_PREFIX}${encodedData}`)
+    .text("❌ Cancel", OFFRAMP_CANCEL);
+}
+
+function buildOfframpOrderText(input: {
+  orderId: string;
+  usdcAmount: number;
+  fiatAmount: number;
+  accountName: string;
+  accountNumber: string;
+  bankName: string;
+  depositAddress: string;
+}): string {
+  return [
+    "✅ Offramp order created.",
+    "",
+    `Order ID: ${input.orderId}`,
+    `USDC debited: ${formatUsdc(input.usdcAmount)}`,
+    `Naira to receive: ${formatNaira(input.fiatAmount)}`,
+    "",
+    "Sending to:",
+    `${input.accountName}`,
+    `${input.accountNumber}`,
+    `${input.bankName}`,
+    "",
+    "PajCash will send the Naira to your bank account after receiving the USDC.",
+  ].join("\n");
+}
+
+export async function handleOfframpNgn(ctx: Context): Promise<void> {
+  if (!ctx.from) {
+    return;
+  }
+
+  await clearOfframpSession(ctx.from.id);
+  await clearPendingFantasyCustomFundAmount(ctx.from.id);
+
+  const balance = await getBalance(ctx.from.id);
+
+  if (balance < PAJCASH_OFFRAMP_MIN_USDC) {
+    await ctx.reply(
+      [
+        `Insufficient balance. You need at least ${formatUsdc(PAJCASH_OFFRAMP_MIN_USDC)} to offramp.`,
+        `Your balance: ${formatUsdc(balance)}`,
+      ].join("\n"),
+      { reply_markup: buildWalletKeyboard() }
+    );
+    return;
+  }
+
+  await saveOfframpSession(ctx.from.id, { step: "awaiting_bank_account" });
+  await ctx.reply(
+    [
+      buildOfframpHelpText(),
+      "",
+      "Enter your bank account number:",
+    ].join("\n"),
+    { reply_markup: buildOfframpCancelKeyboard() }
+  );
 }
 
 export async function handleFundNgn(ctx: Context): Promise<void> {

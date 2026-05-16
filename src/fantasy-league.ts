@@ -564,6 +564,54 @@ export async function clearPendingCustomArenaFee(telegramId: number): Promise<vo
   await redis.del(fantasyCustomArenaFeeKey(telegramId));
 }
 
+// ── Offramp session state ────────────────────────────────────────────────────
+
+const OFFRAMP_SESSION_TTL_SECONDS = 10 * 60;
+
+function offrampSessionKey(telegramId: number): string {
+  return `fantasy:offramp:session:${telegramId}`;
+}
+
+export interface OfframpSessionState {
+  step: "awaiting_bank_account" | "awaiting_usdc_amount";
+  bankId?: string;
+  bankName?: string;
+  accountNumber?: string;
+  accountName?: string;
+}
+
+export async function saveOfframpSession(
+  telegramId: number,
+  state: OfframpSessionState
+): Promise<void> {
+  await redis.set(
+    offrampSessionKey(telegramId),
+    JSON.stringify(state),
+    "EX",
+    OFFRAMP_SESSION_TTL_SECONDS
+  );
+}
+
+export async function loadOfframpSession(
+  telegramId: number
+): Promise<OfframpSessionState | null> {
+  const raw = await redis.get(offrampSessionKey(telegramId));
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as OfframpSessionState;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearOfframpSession(telegramId: number): Promise<void> {
+  await redis.del(offrampSessionKey(telegramId));
+}
+
 export async function addFantasyPlayBalance(
   telegramId: number,
   amount: number

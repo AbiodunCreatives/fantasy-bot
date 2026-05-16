@@ -1,10 +1,12 @@
 import { config } from "./config.ts";
 import {
   createPajCashOnrampRecord,
+  createPajCashOfframpRecord,
   getPajCashOnrampByOrderId,
   upsertPajCashOnrampStatus,
   type PajCashOnramp,
 } from "./db/pajcash.ts";
+import { getBalance, debitBalance } from "./db/balances.ts";
 import { getFantasyWalletByOwnerAddress, type FantasyWallet } from "./db/wallets.ts";
 import {
   ensureFantasyWallet,
@@ -30,6 +32,36 @@ interface PajCashOnrampOrderResponse {
   currency: string;
   mint: string;
   fee?: number;
+}
+
+interface PajCashOfframpOrderResponse {
+  id: string;
+  address: string;
+  mint: string;
+  currency: string;
+  amount: number;
+  fiatAmount: number;
+  rate: number;
+  fee: number;
+}
+
+export interface PajCashBank {
+  id: string;
+  code: string;
+  name: string;
+  logo?: string;
+  country: string;
+}
+
+export interface PajCashBankAccountConfirmation {
+  accountName: string;
+  accountNumber: string;
+  bank: {
+    id: string;
+    name: string;
+    code: string;
+    country: string;
+  };
 }
 
 interface PajCashTransactionResponse {
@@ -350,6 +382,94 @@ export async function getPajCashTransaction(
   });
 }
 
+export async function getBanks(): Promise<PajCashBank[]> {
+  return pajCashRequest<PajCashBank[]>("/pub/bank", {
+    token: getRequiredPajCashSessionToken(),
+  });
+}
+
+export async function confirmBankAccount(input: {
+  bankId: string;
+  accountNumber: string;
+}): Promise<PajCashBankAccountConfirmation> {
+  return pajCashRequest<PajCashBankAccountConfirmation>(
+    `/pub/bank-account/confirm?bankId=${encodeURIComponent(input.bankId)}&accountNumber=${encodeURIComponent(input.accountNumber)}`,
+    { token: getRequiredPajCashSessionToken() }
+  );
+}
+
+export const PAJCASH_OFFRAMP_MIN_USDC = 0.5;
+
+export async function createFantasyPajCashOfframp(input: {
+  telegramId: number;
+  bankId: string;
+  accountNumber: string;
+  usdcAmount: number;
+}): Promise<PajCashOnramp> {
+  const usdcAmount = roundUsdc(input.usdcAmount);
+
+  if (!Number.isFinite(usdcAmount) || usdcAmount < PAJCASH_OFFRAMP_MIN_USDC) {
+    throw new Error(`Minimum offramp amount is ${PAJCASH_OFFRAMP_MIN_USDC} USDC.`);
+  }
+
+  const balance = await getBalance(input.telegramId);
+
+  if (balance < usdcAmount) {
+    throw new Error(`Insufficient wallet balance. Available: ${balance} USDC.`);
+  }
+
+  const sessionToken = getRequiredPajCashSessionToken();
+  const wallet = await ensureFantasyWallet(input.telegramId);
+
+  const requestBody: Record<string, unknown> = {
+    bank: input.bankId,
+    accountNumber: input.accountNumber,
+    currency: "NGN",
+    amount: usdcAmount,
+    mint: config.SOLANA_USDC_MINT,
+    chain: "SOLANA",
+    webhookURL: getPajCashWebhookUrl(),
+  };
+
+  if (config.PAJCASH_BUSINESS_USDC_FEE !== undefined) {
+    requestBody.businessUSDCFee = config.PAJCASH_BUSINESS_USDC_FEE;
+  }
+
+  const order = await pajCashRequest<PajCashOfframpOrderResponse>("/pub/offramp", {
+    method: "POST",
+    token: sessionToken,
+    body: requestBody,
+  });
+
+  // Debit the user's balance before returning the deposit address
+  const debited = await debitBalance(input.telegramId, usdcAmount, {
+    reason: "offramp_request",
+    referenceType: "pajcash_offramp",
+    metadata: { orderId: order.id },
+  });
+
+  if (!debited) {
+    throw new Error(`Insufficient wallet balance to offramp ${usdcAmount} USDC.`);
+  }
+
+  return createPajCashOfframpRecord({
+    orderId: order.id,
+    telegramId: input.telegramId,
+    senderAddress: wallet.owner_address,
+    depositAddress: order.address,
+    mint: order.mint,
+    chain: "SOLANA",
+    currency: order.currency,
+    bankId: input.bankId,
+    accountNumber: input.accountNumber,
+    usdcAmount: order.amount,
+    fiatAmount: order.fiatAmount,
+    rate: order.rate,
+    fee: order.fee ?? config.PAJCASH_BUSINESS_USDC_FEE ?? 0,
+    rawPayload: order as unknown as Record<string, unknown>,
+  });
+}
+
 function getPayloadUsdcAmount(
   payload: PajCashWebhookPayload | PajCashTransactionResponse
 ): number | null {
@@ -386,7 +506,7 @@ export async function reconcilePajCashWebhook(
   const payloadStatus = normalizePajCashStatus(payload.status);
   const transactionType = payload.transactionType?.toUpperCase() ?? "";
 
-  if (transactionType && transactionType !== "ON_RAMP") {
+  if (transactionType && transactionType !== "ON_RAMP" && transactionType !== "OFF_RAMP") {
     return null;
   }
 
@@ -454,7 +574,7 @@ export async function reconcilePajCashWebhook(
     console.warn("[pajcash] Transaction verification failed:", error);
   }
 
-  if (wallet && isPajCashCompletedStatus(record.status)) {
+  if (wallet && isPajCashCompletedStatus(record.status) && (record.transaction_type ?? "ON_RAMP") === "ON_RAMP") {
     await syncFantasyWalletDeposits(wallet).catch((error) => {
       console.warn("[pajcash] Deposit sync after webhook failed:", error);
     });

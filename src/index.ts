@@ -10,6 +10,7 @@ import {
   handleChart,
   handleCreate,
   handleFundNgn,
+  handleOfframpNgn,
   handleFantasyLeagueUiAction,
   handleFantasyJoinConfirm,
   handleFantasyJoinDecline,
@@ -99,10 +100,11 @@ bot.command("board", wrap(handleBoard));
 bot.command("status", wrap(handleStatus));
 bot.command("wallet", wrap(handleWallet));
 bot.command("fundngn", wrap(handleFundNgn));
+bot.command("offrampngn", wrap(handleOfframpNgn));
 bot.command("withdraw", wrap(handleWithdraw));
   bot.command("adminwithdraw", wrap(handleAdminWithdraw));
 bot.callbackQuery(/^flt:/, wrap(handleFantasyLeagueTrade));
-bot.callbackQuery(/^(start|lobby|arena|funds|wallet):/, wrap(handleFantasyLeagueUiAction));
+bot.callbackQuery(/^(start|lobby|arena|funds|wallet|offramp):/, wrap(handleFantasyLeagueUiAction));
 bot.callbackQuery("fantasy:join:confirm", wrap(handleFantasyJoinConfirm));
 bot.callbackQuery("fantasy:join:decline", wrap(handleFantasyJoinDecline));
 bot.on("message:text", async (ctx, next) => {
@@ -390,6 +392,10 @@ async function main(): Promise<void> {
     {
       command: "fundngn",
       description: "Create a Naira top-up order",
+    },
+    {
+      command: "offrampngn",
+      description: "Offramp USDC to Naira via PajCash",
     },
     {
       command: "withdraw",
