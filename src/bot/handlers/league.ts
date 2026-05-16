@@ -219,16 +219,23 @@ function buildStartWelcomeKeyboard(): InlineKeyboard {
 
 function buildHowItWorksText(): string {
   return [
-    "1. Open /wallet to get your personal Solana USDC deposit address",
-    "2. Deposit USDC on Solana and wait for the bot to credit your balance",
-    "3. Arena entry fees ($1-$10) come from that in-bot USDC balance",
-    "4. Your arena stack is still entry fee x 100 for trading",
-    "5. Winnings land back in your in-bot balance and can be withdrawn to any Solana wallet",
+    "❓ How it works",
+    "",
+    "1. Open /wallet — get your Solana USDC deposit address",
+    "2. Deposit USDC (or fund via Naira bank transfer)",
+    "3. Join an arena — entry fee $1–$10",
+    "4. Each 15-min BTC round: pick UP or DOWN",
+    "5. Best virtual bankroll at the end wins the prize pool",
+    "",
+    "Winnings go straight to your in-bot balance.",
+    "Withdraw anytime to any Solana wallet.",
   ].join("\n");
 }
 
 function buildHowItWorksKeyboard(): InlineKeyboard {
-  return new InlineKeyboard().text("🏟 Got it - let me in", START_LOBBY);
+  return new InlineKeyboard()
+    .text("🏟 Browse Arenas", START_LOBBY)
+    .text("💳 Wallet", START_WALLET);
 }
 
 function buildBtcChartKeyboard(): InlineKeyboard {
@@ -250,31 +257,25 @@ function buildStartOnboardingText(input: {
   const name = input.firstName.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
   const balance = input.balance.toFixed(2).replace(/[.]/g, '\\$&');
   return [
-    `👋 *Welcome, ${name}\\!*`,
+    `👋 *Hey ${name}\\!*`,
     "",
-    "━━━━━━━━━━━━━━━━━━━━",
     "🏆 *HeadlineOdds Arena*",
-    "_BTC fantasy trading · Real USDC prizes_",
-    "━━━━━━━━━━━━━━━━━━━━",
+    "_Predict BTC price moves\\. Win real USDC\\._",
     "",
-    "💡 *How it works*",
     "• Pay a small entry fee \\($1–$10\\)",
-    "• Get a virtual stack 100× your entry",
-    "• Trade BTC UP/DOWN across 15\\-min rounds",
-    "• Best bankroll at the end wins the prize pool",
+    "• Trade BTC UP/DOWN each 15\\-min round",
+    "• Best bankroll wins the prize pool",
     "",
-    `💳 *Your balance:* \`$${balance} USDC\``,
-    "",
-    "Deposit USDC on Solana to fund your wallet\\.",
+    `💳 Balance: \`$${balance} USDC\``,
   ].join("\n");
 }
 
 function buildStartOnboardingKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("⚡ Create Arena", ARENA_CREATE)
+    .text("🏟 Browse Arenas", START_LOBBY)
     .text("💳 Wallet", START_WALLET)
     .row()
-    .text("🏟 Browse Arenas", START_LOBBY)
+    .text("❓ How it works", START_HOW_IT_WORKS)
     .text("💵 Fund NGN", WALLET_NAIRA_HELP);
 }
 
@@ -671,79 +672,58 @@ function buildFundsAddedKeyboard(): InlineKeyboard {
 }
 
 function buildWalletText(summary: Awaited<ReturnType<typeof getFantasyWalletSummary>>): string {
-  const ledgerLines =
-    summary.recentLedger.length === 0
-      ? []
-      : summary.recentLedger.slice(0, 4).map((entry) => {
-          const sign = entry.direction === "credit" ? "+" : "-";
-          const label =
-            entry.entry_type === "deposit"
-              ? "Deposit"
-              : entry.entry_type === "arena_entry"
-                ? "Arena entry"
-                : entry.entry_type === "fantasy_prize"
-                  ? "Prize"
-                  : entry.entry_type === "withdrawal_request"
-                    ? "Withdrawal"
-                    : entry.entry_type.replace(/_/g, " ");
+  const ledgerLines = summary.recentLedger.slice(0, 4).map((entry) => {
+    const sign = entry.direction === "credit" ? "+" : "-";
+    const label =
+      entry.entry_type === "deposit" ? "Deposit"
+      : entry.entry_type === "arena_entry" ? "Arena entry"
+      : entry.entry_type === "fantasy_prize" ? "Prize"
+      : entry.entry_type === "withdrawal_request" ? "Withdrawal"
+      : entry.entry_type.replace(/_/g, " ");
+    return `${sign}${formatUsdc(entry.amount)}  ${label}`;
+  });
 
-          return `${sign}${formatUsdc(entry.amount)}  ${label}`;
-        });
-  const withdrawalLines =
-    summary.recentWithdrawals.length === 0
-      ? ["None"]
-      : summary.recentWithdrawals.slice(0, 3).map((entry) => {
-          const destination = abbreviateAddress(entry.destination_address);
-          return `${entry.status.toUpperCase()}  ${formatUsdc(entry.amount)}  ->  ${destination}`;
-        });
-  const onrampLines =
-    summary.recentOnramps.length === 0
-      ? ["None"]
-      : summary.recentOnramps.slice(0, 3).map((entry) => {
-          const amount =
-            entry.actual_usdc_amount > 0
-              ? entry.actual_usdc_amount
-              : entry.expected_usdc_amount;
+  const withdrawalLines = summary.recentWithdrawals.length === 0
+    ? ["None"]
+    : summary.recentWithdrawals.slice(0, 3).map((e) =>
+        `${e.status.toUpperCase()}  ${formatUsdc(e.amount)}  →  ${abbreviateAddress(e.destination_address)}`
+      );
 
-          return `${formatNaira(entry.fiat_amount)}  ->  ${formatUsdc(amount)}  ${entry.status.toUpperCase()}`;
-        });
-
-  const recentActivityHeader = ledgerLines.length > 0 ? "Recent activity:" : "";
+  const onrampLines = summary.recentOnramps.length === 0
+    ? ["None"]
+    : summary.recentOnramps.slice(0, 3).map((e) => {
+        const amt = e.actual_usdc_amount > 0 ? e.actual_usdc_amount : e.expected_usdc_amount;
+        return `${formatNaira(e.fiat_amount)}  →  ${formatUsdc(amt)}  ${e.status.toUpperCase()}`;
+      });
 
   return [
-    "💰 Solana USDC Wallet",
+    "💳 Wallet",
     "",
-    `Available balance: ${formatUsdc(summary.balance)}`,
-    "Network: Solana",
+    `Balance: ${formatUsdc(summary.balance)}`,
     "",
-    "Deposit address:",
+    "Deposit address (Solana USDC):",
     summary.wallet.owner_address,
+    ...(ledgerLines.length > 0 ? ["", "Recent:", ...ledgerLines] : []),
     "",
-    "For Naira top-ups via Paj, tap Fund NGN",
-    "",
-    recentActivityHeader,
-    ...ledgerLines,
-    recentActivityHeader ? "" : "",
-    "Recent withdrawals:",
+    "Withdrawals:",
     ...withdrawalLines,
     "",
-    "Recent Naira top-ups:",
+    "NGN top-ups:",
     ...onrampLines,
-  ]
-    .filter((line) => line !== "")
-    .join("\n");
+  ].join("\n");
 }
 
+// ── Wallet keyboard ──────────────────────────────────────────────────────────
 function buildWalletKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("🔄 Refresh deposits", WALLET_REFRESH)
+    .text("🔄 Refresh", WALLET_REFRESH)
     .text("💵 Fund NGN", WALLET_NAIRA_HELP)
     .row()
-    .text("🌐 Deposit from other chain", WALLET_CROSS_CHAIN)
+    .text("💸 Offramp NGN", "offramp:start")
+    .text("🌐 Other chain", WALLET_CROSS_CHAIN)
     .row()
-    .text("🎮 Withdraw help", WALLET_WITHDRAW_HELP)
-    .row()
-    .text("🏟 Browse arenas", WALLET_BACK);
+    .text("📤 Withdraw USDC", WALLET_WITHDRAW_HELP)
+    .text("🏟 Arenas", WALLET_BACK);
 }
 
 function buildWalletCrossChainHelpText(): string {
@@ -786,87 +766,50 @@ function buildWalletCrossChainResultText(input: {
 
 function buildWalletNairaHelpText(): string {
   return [
-    "💵 Fund NGN",
+    "💵 Fund with Naira",
     "",
-    "Choose a PajCash top-up amount below.",
-    `Minimum: ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)}`,
-    `Maximum: ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}`,
+    "Pick an amount — we'll create a bank transfer order via PajCash.",
+    `Min: ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)}  •  Max: ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}`,
     "",
-    "You can also type /wallet fund-ngn <amount_ngn>.",
-    "Example: /wallet fund-ngn 10000",
-    "",
-    "A PajCash bank transfer order will be created for you.",
-    "Your in-bot balance updates only after native USDC lands in your Solana wallet and the bot sees the deposit.",
+    "Your balance updates once USDC lands in your wallet.",
   ].join("\n");
 }
 
 function buildWalletNairaPickerKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text(
-      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[0]),
-      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[0]}`
-    )
-    .text(
-      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[1]),
-      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[1]}`
-    )
+    .text(formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[0]), `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[0]}`)
+    .text(formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[1]), `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[1]}`)
     .row()
-    .text(
-      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[2]),
-      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[2]}`
-    )
-    .text(
-      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[3]),
-      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[3]}`
-    )
+    .text(formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[2]), `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[2]}`)
+    .text(formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[3]), `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[3]}`)
     .row()
-    .text("Custom Amount", WALLET_NAIRA_CUSTOM)
-    .row()
-    .text("Back to wallet", WALLET_NAIRA_BACK);
+    .text("✏️ Custom", WALLET_NAIRA_CUSTOM)
+    .text("← Back", WALLET_NAIRA_BACK);
 }
 
 function buildWalletNairaCustomAmountText(): string {
   return [
-    "💵 Custom Fund NGN",
-    "",
+    "💵 Custom amount",
     `Type any amount between ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)} and ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}.`,
-    "Examples:",
-    "3500",
-    "₦3,500",
-    "",
-    "Or tap one of the preset amounts below.",
+    "e.g. 3500 or ₦3,500",
   ].join("\n");
 }
 
 function buildWalletNairaCustomAmountKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text(
-      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[0]),
-      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[0]}`
-    )
-    .text(
-      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[1]),
-      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[1]}`
-    )
+    .text(formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[0]), `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[0]}`)
+    .text(formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[1]), `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[1]}`)
     .row()
-    .text(
-      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[2]),
-      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[2]}`
-    )
-    .text(
-      formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[3]),
-      `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[3]}`
-    )
+    .text(formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[2]), `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[2]}`)
+    .text(formatNairaCompact(WALLET_NAIRA_PRESET_AMOUNTS[3]), `${WALLET_NAIRA_AMOUNT_PREFIX}${WALLET_NAIRA_PRESET_AMOUNTS[3]}`)
     .row()
-    .text("Back to wallet", WALLET_NAIRA_BACK);
+    .text("← Back", WALLET_NAIRA_BACK);
 }
 
 function buildWalletNairaAmountValidationText(message?: string): string {
   return [
-    message ?? "Choose a valid Fund NGN amount.",
-    "",
-    `Minimum: ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)}`,
-    `Maximum: ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}`,
+    message ?? "Invalid amount.",
+    `Min: ${formatNairaCompact(WALLET_NAIRA_MIN_AMOUNT)}  •  Max: ${formatNairaCompact(WALLET_NAIRA_MAX_AMOUNT)}`,
   ].join("\n");
 }
 
@@ -908,10 +851,10 @@ function getWalletNairaAmountError(amount: number): string | null {
 
 function buildWalletNairaOrderKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("💵 Fund NGN Again", WALLET_NAIRA_HELP)
-    .text("💳 Open wallet", WALLET_OPEN)
+    .text("💵 Top up again", WALLET_NAIRA_HELP)
+    .text("💳 Wallet", WALLET_OPEN)
     .row()
-    .text("🏟 Browse arenas", WALLET_BACK);
+    .text("🏟 Arenas", WALLET_BACK);
 }
 
 function buildWalletCommandHelpText(): string {
@@ -927,13 +870,15 @@ function buildWalletCommandHelpText(): string {
 
 function buildWalletWithdrawHelpText(): string {
   return [
-    "🎮 Withdraw USDC",
+    "📤 Withdraw USDC",
     "",
-    `Use: /wallet withdraw <amount> <solana_address>`,
-    `Minimum: ${formatUsdc(config.SOLANA_WITHDRAW_MIN_AMOUNT)}`,
+    `Min: ${formatUsdc(config.SOLANA_WITHDRAW_MIN_AMOUNT)}`,
+    "",
+    "Send the command:",
+    "/withdraw <amount> <solana_address>",
     "",
     "Example:",
-    "/wallet withdraw 5 FILL_IN_SOLANA_ADDRESS",
+    "/withdraw 5 YourSolanaAddressHere",
   ].join("\n");
 }
 
@@ -946,18 +891,18 @@ function buildWalletNairaOrderText(input: {
   accountNumber: string;
 }): string {
   return [
-    "💰 Naira top-up ready.",
+    "💰 NGN top-up order ready",
     "",
-    `Order ID: ${input.orderId}`,
     `Send: ${formatNaira(input.fiatAmount)}`,
-    `Expected credit: ${formatUsdc(input.expectedUsdcAmount)}`,
+    `You'll receive: ~${formatUsdc(input.expectedUsdcAmount)}`,
     "",
-    "Transfer to:",
+    "Bank transfer to:",
     `${input.accountName}`,
-    `${input.accountNumber}`,
-    `${input.bankName}`,
+    `${input.accountNumber}  •  ${input.bankName}`,
     "",
-    "After PajCash completes the order and USDC lands in your Solana wallet, your in-bot balance will be credited.",
+    `Ref: ${input.orderId}`,
+    "",
+    "Balance updates once USDC arrives in your wallet.",
   ].join("\n");
 }
 
@@ -985,12 +930,12 @@ function buildWalletWithdrawalRequestedText(input: {
   destinationAddress: string;
 }): string {
   return [
-    "✅ Withdrawal requested.",
+    "✅ Withdrawal queued",
     "",
     `Amount: ${formatUsdc(input.amount)}`,
-    `Destination: ${input.destinationAddress}`,
+    `To: ${abbreviateAddress(input.destinationAddress)}`,
     "",
-    "The bot will broadcast the Solana transfer shortly.",
+    "Solana transfer will broadcast shortly.",
   ].join("\n");
 }
 
@@ -1088,35 +1033,23 @@ function buildFantasyCreateSuccessKeyboard(shareUrl?: string): InlineKeyboard {
 
 function buildLeagueHelpText(): string {
   return [
-    "🏟 HEADLINE ODDS ARENA",
+    "🏟 HeadlineOdds Arena — Commands",
     "",
-    "Commands:",
-    "/start - Open the welcome screen and lobby",
-    "/help - Show the command guide",
-    "/chart - Open the BTC 15m chart link",
-    "/wallet - View your Solana USDC wallet and deposit address",
-    "/fundngn 10000 - Create a Naira top-up order via PajCash",
-    "/withdraw 5 ADDRESS - Withdraw USDC to a Solana wallet",
-    "/league - See your active arenas or browse the lobby",
-    "/create 5 12 - Create a 12h BTC fantasy arena with $5 entry",
-    "/join ABC123 - Review and join an arena by code",
-    "/live ABC123 - View the current BTC round and countdown",
-    "/board ABC123 - View the arena leaderboard",
-    "/status ABC123 - View arena details",
+    "/start — Home screen",
+    "/wallet — Your USDC wallet & deposit address",
+    "/fundngn — Top up via Naira bank transfer",
+    "/offrampngn — Convert USDC back to Naira",
+    "/withdraw <amount> <address> — Withdraw USDC to Solana",
+    "/league — Your arenas",
+    "/create <fee> <hours> — Create arena  e.g. /create 5 12",
+    "/join <code> — Join an arena",
+    "/live <code> — Current round & countdown",
+    "/board <code> — Leaderboard",
+    "/status <code> — Arena details",
+    "/chart — BTC 15m chart",
     "",
-    "Rules:",
-    "- BTC only in v1",
-    "- Arena durations: 3h, 9h, 12h, or 24h",
-    "- Four Bayse BTC 15M rounds per hour",
-    "- Entry fee buys virtual bankroll at 100x",
-    "- One fantasy trade per round",
-    "- Bot keeps 8% commission when the league closes",
-    "- Top finishers split the prize pool (1v1 arenas: winner takes all)",
-    "- Joining is final",
-    "- Deposits and withdrawals use Solana USDC",
-    "- Arena entries debit your in-bot USDC balance",
-    "",
-    "Arena balances stay virtual during play, but funding and payouts are real USDC.",
+    "Entry fees: $1–$10  •  Durations: 3h / 9h / 12h / 24h",
+    "4 rounds per hour  •  8% commission on prize pool",
   ].join("\n");
 }
 
@@ -1968,6 +1901,12 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
       buildWalletNairaHelpText(),
       buildWalletNairaPickerKeyboard()
     );
+    return;
+  }
+
+  if (data === "offramp:start") {
+    await clearPendingFantasyCustomFundAmount(ctx.from.id);
+    await handleOfframpNgn(ctx);
     return;
   }
 
