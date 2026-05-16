@@ -573,11 +573,12 @@ function offrampSessionKey(telegramId: number): string {
 }
 
 export interface OfframpSessionState {
-  step: "awaiting_bank_account" | "awaiting_usdc_amount";
+  step: "awaiting_bank_account" | "awaiting_usdc_amount" | "pending_confirm";
   bankId?: string;
   bankName?: string;
   accountNumber?: string;
   accountName?: string;
+  usdcAmount?: number;
 }
 
 export async function saveOfframpSession(

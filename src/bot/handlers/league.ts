@@ -98,7 +98,7 @@ const WALLET_NAIRA_MAX_AMOUNT = 20_000;
 const WALLET_NAIRA_PRESET_AMOUNTS = [1_000, 2_000, 5_000, 10_000] as const;
 
 const OFFRAMP_CANCEL = "offramp:cancel";
-const OFFRAMP_CONFIRM_PREFIX = "offramp:confirm:";
+const OFFRAMP_CONFIRM = "offramp:confirm";
 
 type FantasyLeagueStatusViewData = Awaited<
   ReturnType<typeof getFantasyLeagueStatusView>
@@ -2083,51 +2083,41 @@ export async function handleFantasyLeagueUiAction(ctx: Context): Promise<void> {
     return;
   }
 
-  if (data.startsWith(OFFRAMP_CONFIRM_PREFIX)) {
+  if (data === OFFRAMP_CONFIRM) {
+    const session = await loadOfframpSession(ctx.from.id);
     await clearOfframpSession(ctx.from.id);
 
-    let parsed: { bankId: string; accountNumber: string; usdcAmount: number; accountName: string; bankName: string };
-    try {
-      parsed = JSON.parse(
-        Buffer.from(data.slice(OFFRAMP_CONFIRM_PREFIX.length), "base64").toString("utf8")
-      ) as typeof parsed;
-    } catch {
-      await ctx.editMessageText("Something went wrong. Please try /offrampngn again.").catch(() => null);
+    if (
+      !session ||
+      session.step !== "pending_confirm" ||
+      !session.bankId ||
+      !session.accountNumber ||
+      !session.usdcAmount
+    ) {
+      await ctx.editMessageText("Session expired. Please try /offrampngn again.").catch(() => null);
       return;
     }
 
     try {
       const order = await createFantasyPajCashOfframp({
         telegramId: ctx.from.id,
-        bankId: parsed.bankId,
-        accountNumber: parsed.accountNumber,
-        usdcAmount: parsed.usdcAmount,
+        bankId: session.bankId,
+        accountNumber: session.accountNumber,
+        usdcAmount: session.usdcAmount,
       });
 
-      await ctx.editMessageText(
-        buildOfframpOrderText({
-          orderId: order.order_id,
-          usdcAmount: order.expected_usdc_amount,
-          fiatAmount: order.fiat_amount,
-          accountName: parsed.accountName,
-          accountNumber: parsed.accountNumber,
-          bankName: parsed.bankName,
-          depositAddress: order.recipient_address ?? "",
-        }),
-        { reply_markup: buildWalletKeyboard() }
-      ).catch(() =>
-        ctx.reply(
-          buildOfframpOrderText({
-            orderId: order.order_id,
-            usdcAmount: order.expected_usdc_amount,
-            fiatAmount: order.fiat_amount,
-            accountName: parsed.accountName,
-            accountNumber: parsed.accountNumber,
-            bankName: parsed.bankName,
-            depositAddress: order.recipient_address ?? "",
-          }),
-          { reply_markup: buildWalletKeyboard() }
-        )
+      const resultText = buildOfframpOrderText({
+        orderId: order.order_id,
+        usdcAmount: order.expected_usdc_amount,
+        fiatAmount: order.fiat_amount,
+        accountName: session.accountName ?? session.accountNumber,
+        accountNumber: session.accountNumber,
+        bankName: session.bankName ?? session.bankId,
+        depositAddress: order.recipient_address ?? "",
+      });
+
+      await ctx.editMessageText(resultText, { reply_markup: buildWalletKeyboard() }).catch(() =>
+        ctx.reply(resultText, { reply_markup: buildWalletKeyboard() })
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Something went wrong.";
@@ -2372,15 +2362,11 @@ export async function handleFantasyTextInput(ctx: Context): Promise<boolean> {
         return true;
       }
 
-      const encodedData = Buffer.from(
-        JSON.stringify({
-          bankId: offrampSession.bankId,
-          accountNumber: offrampSession.accountNumber,
-          usdcAmount,
-          accountName: offrampSession.accountName,
-          bankName: offrampSession.bankName,
-        })
-      ).toString("base64");
+      await saveOfframpSession(ctx.from.id, {
+        ...offrampSession,
+        step: "pending_confirm",
+        usdcAmount,
+      });
 
       await ctx.reply(
         [
@@ -2393,7 +2379,7 @@ export async function handleFantasyTextInput(ctx: Context): Promise<boolean> {
           "",
           "Your balance will be debited immediately.",
         ].join("\n"),
-        { reply_markup: buildOfframpConfirmKeyboard(encodedData) }
+        { reply_markup: buildOfframpConfirmKeyboard() }
       );
 
       return true;
@@ -2637,9 +2623,9 @@ function buildOfframpCancelKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text("❌ Cancel", OFFRAMP_CANCEL);
 }
 
-function buildOfframpConfirmKeyboard(encodedData: string): InlineKeyboard {
+function buildOfframpConfirmKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("✅ Confirm", `${OFFRAMP_CONFIRM_PREFIX}${encodedData}`)
+    .text("✅ Confirm", OFFRAMP_CONFIRM)
     .text("❌ Cancel", OFFRAMP_CANCEL);
 }
 
